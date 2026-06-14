@@ -714,6 +714,11 @@ Lance la commande sur le serveur Linux cible, ou utilise le backend SSH.
 
 Verifie que l utilisateur cible peut utiliser `sudo` et que `systemd` est bien present sur le serveur.
 
+### Propriete Git douteuse
+
+Si Git affiche `proprietaire douteux detecte` ou `dubious ownership`, SpeedDeploy ajoute automatiquement le depot a `git safe.directory` avant le `pull`.
+Cela arrive quand le dossier du projet est clone sous un compte systeme different de l utilisateur qui execute SpeedDeploy.
+
 ### Django 6.x avec Python 3.11
 
 Si `pip` refuse `Django==6.0.x`, le serveur n a probablement pas une version de Python assez recente.
