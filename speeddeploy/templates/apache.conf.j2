@@ -1,0 +1,23 @@
+<VirtualHost *:80>
+    ServerName {{ domain }}
+    ServerAlias www.{{ domain }}
+
+    Alias /static {{ static_dir }}
+    <Directory {{ static_dir }}>
+        Require all granted
+    </Directory>
+
+    Alias /media {{ media_dir }}
+    <Directory {{ media_dir }}>
+        Require all granted
+    </Directory>
+
+    ProxyPreserveHost On
+    ProxyPass /static !
+    ProxyPass /media !
+    ProxyPass / unix:{{ path }}/gunicorn.sock|http://localhost/
+    ProxyPassReverse / unix:{{ path }}/gunicorn.sock|http://localhost/
+
+    ErrorLog ${APACHE_LOG_DIR}/{{ project }}_error.log
+    CustomLog ${APACHE_LOG_DIR}/{{ project }}_access.log combined
+</VirtualHost>

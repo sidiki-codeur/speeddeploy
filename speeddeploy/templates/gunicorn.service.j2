@@ -1,0 +1,15 @@
+[Unit]
+Description=Gunicorn {{ project }}
+After=network.target
+
+[Service]
+User={{ user }}
+Group={{ group }}
+WorkingDirectory={{ path }}
+Environment=PYTHONUNBUFFERED=1
+ExecStart={{ venv }}/bin/gunicorn --workers {{ workers }} --bind unix:{{ path }}/gunicorn.sock {{ wsgi }}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

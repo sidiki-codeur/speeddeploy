@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "speeddeploy"
+version = "0.1.0"
+description = "Fast Django deployment tool for Debian VPS with Apache and Gunicorn"
+readme = "README.md"
+authors = [
+    { name = "Sidiki", email = "osaadoukou@gmail.com" }
+]
+dependencies = [
+    "typer",
+    "pyyaml",
+    "jinja2",
+    "rich"
+]
+requires-python = ">=3.10"
+
+[project.scripts]
+speeddeploy = "speeddeploy.cli:app"
+
+[tool.setuptools]
+packages = ["speeddeploy"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+speeddeploy = ["templates/*.j2"]
