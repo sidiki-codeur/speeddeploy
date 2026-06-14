@@ -1,71 +1,71 @@
 # SpeedDeploy
 
-SpeedDeploy is a CLI tool for deploying Django applications on Linux servers.
-It now ships with two layers:
+SpeedDeploy est un outil CLI pour deployer des applications Django sur des serveurs Linux.
+Le projet dispose maintenant de deux niveaux :
 
-- V1, the legacy local deployment flow
-- V2, the backend-aware engine for local Linux/WSL and remote SSH deployments
+- V1, le flux local historique
+- V2, le moteur moderne avec prise en charge de `local` et `ssh`
 
-V2 is the recommended path for new projects.
+V2 est le chemin recommande pour les nouveaux projets.
 
-## What SpeedDeploy Does
+## Ce que SpeedDeploy automatise
 
-SpeedDeploy automates the repetitive parts of a Django deployment:
+SpeedDeploy prend en charge les etapes repetitives du deploiement Django :
 
-- prepare the target directory
-- clone or update the Git repository
-- create and refresh the Python virtual environment
-- run Django migrations and `collectstatic`
-- install and enable Gunicorn as a systemd service
-- render Apache or Nginx configuration
-- provision SSL with Certbot
-- restart or inspect the running services
+- preparation du dossier cible
+- clonage ou mise a jour du depot Git
+- creation et mise a jour du virtualenv Python
+- execution des migrations Django et de `collectstatic`
+- creation et activation du service Gunicorn
+- generation de la configuration Apache ou Nginx
+- provisionnement SSL avec Certbot
+- redemarrage et inspection des services
 
-## Requirements
+## Pre-requis
 
-### Local machine
+### Machine locale
 
-- Python 3.10 or newer
+- Python 3.10 ou plus recent
 - `pip`
 - Git
-- On Linux deployments: Linux or WSL is required for local execution
-- On Windows: use SpeedDeploy to generate configs, plan deployments, or deploy through SSH
+- Sous Linux pour un deploiement local direct
+- Sous Windows pour generer les configs, preparer les plans, ou deployer via SSH
 
-### Target server
+### Serveur cible
 
-- A Linux server with `systemd`
-- A Git repository accessible from the server
-- `sudo` privileges for package installation and service management
-- For SSL: a public domain name pointing to the server
+- Un serveur Linux avec `systemd`
+- Un depot Git accessible depuis le serveur
+- Les droits `sudo` pour installer les paquets et gerer les services
+- Pour le SSL, un nom de domaine public pointe vers le serveur
 
 ## Installation
 
-Create and activate a virtual environment:
+Creation et activation de l environnement virtuel :
 
 ```bash
 python -m venv venv
 ```
 
-Windows:
+Windows :
 
 ```bash
 venv\Scripts\activate
 ```
 
-Linux or macOS:
+Linux ou macOS :
 
 ```bash
 source venv/bin/activate
 ```
 
-Install the project:
+Installation du projet :
 
 ```bash
 pip install -r requirements.txt
 pip install -e .
 ```
 
-## Package Layout
+## Arborescence
 
 ```text
 speeddeploy/
@@ -98,96 +98,96 @@ speeddeploy/
 `-- .gitignore
 ```
 
-## How It Works
+## Principe de fonctionnement
 
-SpeedDeploy reads a YAML file from `projects/` by default.
-The file describes the Django project, the server target, and the deployment backend.
+SpeedDeploy lit un fichier YAML dans `projects/` par defaut.
+Ce fichier decrit le projet Django, la cible serveur et le mode d execution.
 
-Basic flow:
+Flux general :
 
-1. create a project config
-2. inspect the plan with `doctor` or `plan`
-3. run a dry-run
-4. run the real deployment
-5. enable SSL if needed
-6. use `update`, `restart`, `status`, and `logs` for day-2 operations
+1. creer une configuration projet
+2. inspecter le plan avec `doctor` ou `plan`
+3. lancer un `dry-run`
+4. lancer le vrai deploiement
+5. activer le SSL si necessaire
+6. utiliser `update`, `restart`, `status` et `logs` pour l exploitation quotidienne
 
-## V1 And V2
+## V1 et V2
 
 ### V1
 
-V1 keeps the original simple flow:
+V1 conserve le flux simple d origine :
 
-- local execution
+- execution locale
 - Apache + Gunicorn
-- Debian-style assumptions
-- quick start for simple VPS setups
+- hypothese Debian/Ubuntu
+- demarrage rapide pour des VPS simples
 
 ### V2
 
-V2 introduces a real deployment model:
+V2 ajoute un vrai modele de deploiement :
 
-- `local` backend for Linux and WSL
-- `ssh` backend for remote execution
-- Apache or Nginx
-- multiple package managers
-- stronger config validation
-- clearer execution engine
+- backend `local` pour Linux et WSL
+- backend `ssh` pour l execution distante
+- Apache ou Nginx
+- plusieurs gestionnaires de paquets
+- validation plus stricte des configurations
+- moteur d execution plus propre
 
-## Quick Start
+## Demarrage rapide
 
-### 1. Create a config
+### 1. Creer une configuration
 
-V2 interactive config creation:
+Creation interactive de config V2 :
 
 ```bash
 speeddeploy v2 config new
 ```
 
-V1 config creation:
+Creation de config V1 :
 
 ```bash
 speeddeploy config new
 ```
 
-### 2. Inspect the plan
+### 2. Visualiser le plan
 
 ```bash
 speeddeploy v2 plan gestiolocative
 ```
 
-### 3. Run a dry-run
+### 3. Lancer un test a blanc
 
 ```bash
 speeddeploy v2 --dry-run deploy gestiolocative
 ```
 
-### 4. Deploy
+### 4. Deployer
 
 ```bash
 speeddeploy v2 deploy gestiolocative
 ```
 
-### 5. Enable SSL
+### 5. Activer le SSL
 
 ```bash
 speeddeploy v2 ssl gestiolocative
 ```
 
-### 6. Update later
+### 6. Mettre a jour plus tard
 
 ```bash
 speeddeploy v2 update gestiolocative
 ```
 
-## Configuration Guide
+## Guide de configuration
 
-SpeedDeploy supports two config blocks:
+SpeedDeploy utilise deux blocs de configuration :
 
-- `target` for the deployment platform
-- `connection` for the execution backend
+- `target` pour le contexte technique de deploiement
+- `connection` pour le mode d execution
 
-### V2 Example Config
+### Exemple V2
 
 ```yaml
 project: gestiolocative
@@ -213,7 +213,7 @@ connection:
   backend: local
 ```
 
-### SSH Example
+### Exemple SSH
 
 ```yaml
 project: gestiolocative
@@ -243,9 +243,9 @@ connection:
   identity_file: C:/Users/Administrateur/.ssh/id_ed25519
 ```
 
-## V2 Config Fields
+## Champs de configuration
 
-### Required fields
+### Champs obligatoires
 
 - `project`
 - `domain`
@@ -260,26 +260,26 @@ connection:
 - `media_dir`
 - `workers`
 
-### Target block
+### Bloc `target`
 
-- `os`: target operating system, currently informational
-- `init_system`: currently `systemd`
-- `web_server`: `apache` or `nginx`
-- `app_server`: currently `gunicorn`
-- `ssl_provider`: `certbot`, `none`, or `disabled`
-- `package_manager`: `apt`, `dnf`, `yum`, `apk`, or `pacman`
+- `os` : systeme cible, informatif pour le moment
+- `init_system` : actuellement `systemd`
+- `web_server` : `apache` ou `nginx`
+- `app_server` : actuellement `gunicorn`
+- `ssl_provider` : `certbot`, `none` ou `disabled`
+- `package_manager` : `apt`, `dnf`, `yum`, `apk` ou `pacman`
 
-### Connection block
+### Bloc `connection`
 
-- `backend`: `local` or `ssh`
-- `host`: required for SSH
-- `port`: SSH port, default `22`
-- `user`: SSH login user, optional
-- `identity_file`: SSH private key, optional
+- `backend` : `local` ou `ssh`
+- `host` : obligatoire pour SSH
+- `port` : port SSH, par defaut `22`
+- `user` : utilisateur SSH, optionnel
+- `identity_file` : cle privee SSH, optionnelle
 
-## Command Reference
+## Reference des commandes
 
-### Root CLI
+### CLI principale
 
 ```bash
 speeddeploy --help
@@ -287,14 +287,14 @@ speeddeploy --dry-run deploy gestiolocative
 speeddeploy --projects-dir projects v2 plan gestiolocative
 ```
 
-### Helpers
+### Aide
 
 ```bash
 speeddeploy helpers
 speeddeploy helpers gestiolocative
 ```
 
-### Config generation
+### Creation de configuration
 
 ```bash
 speeddeploy config new
@@ -304,7 +304,7 @@ speeddeploy v2 config new
 speeddeploy v2 config new gestiolocative --backend ssh --host 203.0.113.10 --connection-user root
 ```
 
-### Diagnostics
+### Diagnostic
 
 ```bash
 speeddeploy doctor gestiolocative
@@ -315,7 +315,7 @@ speeddeploy v2 plan gestiolocative
 speeddeploy v2 helpers
 ```
 
-### Deployment lifecycle
+### Cycle de deploiement
 
 ```bash
 speeddeploy init gestiolocative
@@ -333,7 +333,7 @@ speeddeploy ssl gestiolocative
 speeddeploy superuser gestiolocative
 ```
 
-### V2 lifecycle
+### Cycle V2
 
 ```bash
 speeddeploy v2 deploy gestiolocative
@@ -345,90 +345,90 @@ speeddeploy v2 ssl gestiolocative
 speeddeploy v2 superuser gestiolocative
 ```
 
-## Recommended Operational Flow
+## Flux recommande
 
-For a new project:
+Pour un nouveau projet :
 
-1. create the V2 config
-2. run `speeddeploy v2 doctor <project>`
-3. run `speeddeploy v2 plan <project>`
-4. run `speeddeploy v2 --dry-run deploy <project>`
-5. run `speeddeploy v2 deploy <project>`
-6. validate the site and SSL
-7. use `speeddeploy v2 update <project>` for later changes
+1. creer la config V2
+2. lancer `speeddeploy v2 doctor <project>`
+3. lancer `speeddeploy v2 plan <project>`
+4. lancer `speeddeploy v2 --dry-run deploy <project>`
+5. lancer `speeddeploy v2 deploy <project>`
+6. verifier le site et le SSL
+7. utiliser `speeddeploy v2 update <project>` pour les mises a jour
 
-## Deployment Backends
+## Backends de deploiement
 
-### Local backend
+### Backend local
 
-Use this when the machine running SpeedDeploy is the target server itself.
-This is the simplest mode and works on Linux or WSL.
+Utiliser ce mode quand la machine qui lance SpeedDeploy est aussi le serveur cible.
+Cela fonctionne sur Linux ou WSL.
 
-### SSH backend
+### Backend SSH
 
-Use this when SpeedDeploy runs from your workstation and deploys to a remote Linux server.
-You need:
+Utiliser ce mode quand SpeedDeploy tourne sur ton poste et deploie sur un serveur Linux distant.
+Il faut :
 
-- SSH access
-- a reachable host
-- proper sudo rights on the remote server
-- Git access from the remote host
+- un acces SSH
+- un hote joignable
+- les droits sudo appropries
+- un acces Git depuis le serveur distant
 
-## Nginx Vs Apache
+## Apache ou Nginx
 
 ### Apache
 
-Use Apache when you want the classic Debian/Ubuntu reverse proxy stack.
-SpeedDeploy renders a vhost file and enables the site automatically.
+Apache convient bien aux stacks Debian/Ubuntu classiques.
+SpeedDeploy genere un vhost et active automatiquement le site.
 
 ### Nginx
 
-Use Nginx when you prefer an Nginx reverse proxy in front of Gunicorn.
-SpeedDeploy renders an Nginx site config and reloads Nginx.
+Nginx convient si tu veux un reverse proxy Nginx devant Gunicorn.
+SpeedDeploy genere la configuration du site et recharge Nginx.
 
-## Day-2 Operations
+## Exploitation quotidienne
 
-### Check service status
+### Verifier le statut
 
 ```bash
 speeddeploy v2 status gestiolocative
 ```
 
-### Read logs
+### Lire les logs
 
 ```bash
 speeddeploy v2 logs gestiolocative
 ```
 
-### Restart services
+### Redemarrer les services
 
 ```bash
 speeddeploy v2 restart gestiolocative
 ```
 
-### Create a Django superuser
+### Creer un superutilisateur Django
 
 ```bash
 speeddeploy v2 superuser gestiolocative
 ```
 
-## Troubleshooting
+## Depannage
 
 ### "Configuration file not found"
 
-Check that the file exists in `projects/` and that you are passing the project name without extension.
+Verifie que le fichier existe dans `projects/` et que tu passes le nom du projet sans extension.
 
 ### "Unsupported backend"
 
-Make sure `connection.backend` is `local` or `ssh`.
+Verifie que `connection.backend` vaut `local` ou `ssh`.
 
 ### "SSH backend requires `connection.host`"
 
-Add a valid `host` value in the `connection` block.
+Ajoute une valeur valide pour `host` dans le bloc `connection`.
 
 ### "Unsupported package manager"
 
-Use one of:
+Utilise l une de ces valeurs :
 
 - `apt`
 - `dnf`
@@ -438,35 +438,36 @@ Use one of:
 
 ### "Local deployment only works on Linux/WSL"
 
-Run the command on the target Linux host, or use the SSH backend.
+Lance la commande sur le serveur Linux cible, ou utilise le backend SSH.
 
-### Systemd or sudo failures
+### Erreurs systemd ou sudo
 
-Check that the target user can run `sudo` and that `systemd` is available on the server.
+Verifie que l utilisateur cible peut utiliser `sudo` et que `systemd` est bien present sur le serveur.
 
-## Security Notes
+## Notes de securite
 
-- Never commit secrets, private keys, or production passwords.
-- Keep SSH keys outside the repository.
-- Review generated files before enabling SSL on a production domain.
-- Use `--dry-run` before the first real deployment.
+- Ne commit jamais de secrets, de cles privees ou de mots de passe de production.
+- Garde les cles SSH hors du depot.
+- Verifie les fichiers generes avant d activer le SSL en production.
+- Utilise `--dry-run` avant le premier vrai deploiement.
 
-## Development Notes
+## Notes de developpement
 
-The codebase is split into:
+Le code est organise ainsi :
 
-- `speeddeploy/` for the V1 flow
-- `speeddeploy/v2/` for the new backend-aware engine
+- `speeddeploy/` pour le flux V1
+- `speeddeploy/v2/` pour le moteur moderne avec backends
 
-This makes it possible to evolve the tool without breaking the simpler path.
+Cette separation permet de faire evoluer l outil sans casser le chemin le plus simple.
 
-## Public Release Checklist
+## Avant publication GitHub
 
-Before publishing to GitHub:
+Avant de publier le projet :
 
-1. review every config file in `projects/`
-2. remove any real credentials
-3. verify the README examples
-4. run the syntax checks locally
-5. test `speeddeploy v2 config new`
-6. test `speeddeploy v2 --dry-run deploy <project>`
+1. verifier tous les fichiers dans `projects/`
+2. supprimer toute vraie credential
+3. relire les exemples du README
+4. lancer les verifications syntaxiques localement
+5. tester `speeddeploy v2 config new`
+6. tester `speeddeploy v2 --dry-run deploy <project>`
+
