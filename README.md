@@ -1,6 +1,6 @@
 # SpeedDeploy
 
-SpeedDeploy est un outil CLI pour deployer des applications Django sur des serveurs Linux.
+SpeedDeploy est un outil en ligne de commande pour deployer des applications Django sur des serveurs Linux.
 Le projet dispose maintenant de deux niveaux :
 
 - V1, le flux local historique
@@ -21,7 +21,7 @@ SpeedDeploy prend en charge les etapes repetitives du deploiement Django :
 - provisionnement SSL avec Certbot
 - redemarrage et inspection des services
 
-## Pre-requis
+## Prerequis
 
 ### Machine locale
 
@@ -544,6 +544,25 @@ connection:
 
 ## Toutes les commandes SpeedDeploy
 
+### Resume V2
+
+| Commande | Usage exact |
+| --- | --- |
+| `speeddeploy v2 config new` | Creer un fichier YAML de projet de maniere interactive. |
+| `speeddeploy v2 doctor <project>` | Verifier la configuration, l environnement et le plan avant d executer. |
+| `speeddeploy v2 plan <project>` | Afficher la liste exacte des etapes prevues. |
+| `speeddeploy v2 deploy <project>` | Lancer un deploiement complet du projet. |
+| `speeddeploy v2 update <project>` | Relancer tout le cycle: code, configuration, SSL et redemarrage. |
+| `speeddeploy v2 update-code <project>` | Mettre a jour le code applicatif, les dependances Python et les migrations. |
+| `speeddeploy v2 update-conf <project>` | Regenerer Gunicorn et la configuration Apache ou Nginx. |
+| `speeddeploy v2 update-cert <project>` | Renouveler ou reemettre le certificat SSL. |
+| `speeddeploy v2 restart <project>` | Redemarrer le service applicatif et recharger le proxy web. |
+| `speeddeploy v2 status <project>` | Consulter l etat du service systemd. |
+| `speeddeploy v2 logs <project>` | Lire les journaux du service applicatif. |
+| `speeddeploy v2 ssl <project>` | Repasser le provisionnement SSL via Certbot. |
+| `speeddeploy v2 superuser <project>` | Creer un superutilisateur Django dans le virtualenv du projet. |
+| `speeddeploy v2 helpers` | Afficher l aide operationnelle et les raccourcis utiles. |
+
 ### CLI principale
 
 ```bash
@@ -596,6 +615,13 @@ Utilise ces commandes quand tu ne veux pas relancer tout le cycle:
 - `speeddeploy v2 update-code <project>` pour mettre a jour uniquement le code, les dependances Python et les migrations
 - `speeddeploy v2 update-conf <project>` pour regenerer Gunicorn et la configuration Apache ou Nginx
 - `speeddeploy v2 update-cert <project>` pour renouveler ou reemettre le certificat SSL
+
+En pratique:
+
+- utilise `update-code` apres un nouveau `git pull` ou une modification du projet Python
+- utilise `update-conf` apres un changement dans les fichiers de service, de proxy ou de template
+- utilise `update-cert` quand tu veux forcer Certbot ou reconstruire le certificat du domaine
+- utilise `update` quand tu veux relancer toute la chaine: code, conf, SSL et redemarrage
 
 ### Cycle de deploiement
 
@@ -726,19 +752,19 @@ speeddeploy v2 superuser gestiolocative
 
 ## Depannage
 
-### "Configuration file not found"
+### "Fichier de configuration introuvable"
 
 Verifie que le fichier existe dans `projects/` et que tu passes le nom du projet sans extension.
 
-### "Unsupported backend"
+### "Backend non supporte"
 
 Verifie que `connection.backend` vaut `local` ou `ssh`.
 
-### "SSH backend requires `connection.host`"
+### "Le backend SSH requiert `connection.host`"
 
 Ajoute une valeur valide pour `host` dans le bloc `connection`.
 
-### "Unsupported package manager"
+### "Gestionnaire de paquets non supporte"
 
 Utilise l une de ces valeurs :
 
@@ -748,7 +774,7 @@ Utilise l une de ces valeurs :
 - `apk`
 - `pacman`
 
-### "Local deployment only works on Linux/WSL"
+### "Le deploiement local ne fonctionne que sous Linux/WSL"
 
 Lance la commande sur le serveur Linux cible, ou utilise le backend SSH.
 
