@@ -551,6 +551,42 @@ connection:
 - Garde `target.web_server` a `apache` si tu veux une configuration classique Debian/Ubuntu
 - Passe a `nginx` si tu veux un reverse proxy Nginx devant Gunicorn
 
+## Gestion des projets
+
+La V2 inclut aussi des commandes pour administrer les fichiers de configuration projet.
+
+### Lister les projets
+
+```bash
+speeddeploy v2 projects list
+```
+
+### Afficher un projet
+
+```bash
+speeddeploy v2 projects show gestiolocative
+```
+
+### Dupliquer un projet
+
+```bash
+speeddeploy v2 projects duplicate gestiolocative gestiolocative-staging --path /srv/gestiolocative-staging
+```
+
+### Renommer un projet
+
+```bash
+speeddeploy v2 projects rename gestiolocative gestiolocative-prod
+```
+
+### Supprimer un projet
+
+```bash
+speeddeploy v2 projects remove gestiolocative --yes
+```
+
+Ces commandes agissent sur les fichiers YAML dans `projects/` et reutilisent le schema V2 existant.
+
 ## Toutes les commandes SpeedDeploy
 
 ### Resume V2
@@ -558,6 +594,11 @@ connection:
 | Commande | Usage exact |
 | --- | --- |
 | `speeddeploy v2 config new` | Creer un fichier YAML de projet de maniere interactive. |
+| `speeddeploy v2 projects list` | Lister tous les fichiers de configuration projet connus. |
+| `speeddeploy v2 projects show <project>` | Afficher la configuration d un projet. |
+| `speeddeploy v2 projects duplicate <project> <new>` | Dupliquer une configuration projet sous un nouveau nom. |
+| `speeddeploy v2 projects rename <project> <new>` | Renommer un fichier de configuration projet. |
+| `speeddeploy v2 projects remove <project>` | Supprimer un fichier de configuration projet. |
 | `speeddeploy v2 doctor <project>` | Verifier la configuration, l environnement et le plan avant d executer. |
 | `speeddeploy v2 doctor <project> --fix` | Reparer les droits du depot et `safe.directory`. |
 | `speeddeploy v2 plan <project>` | Afficher la liste exacte des etapes prevues. |

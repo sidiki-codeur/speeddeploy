@@ -7,6 +7,7 @@ from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.syntax import Syntax
 from rich.table import Table
 
 from .engine import DeploymentEngine, build_engine, build_plan
@@ -16,6 +17,7 @@ from ..system import RuntimeInfo, detect_runtime
 
 app = typer.Typer(add_completion=False, help="SpeedDeploy V2 primary deployment CLI.")
 config_app = typer.Typer(add_completion=False, help="Create and inspect V2 project config files.")
+projects_app = typer.Typer(add_completion=False, help="Manage V2 project configuration files.")
 console = Console()
 
 
@@ -51,6 +53,13 @@ def _load_spec(project: str, state: V2State):
         raise typer.Exit(code=1) from exc
 
 
+def _project_config_path(project: str, state: V2State) -> Path:
+    candidate = Path(project)
+    if candidate.suffix.lower() in {".yml", ".yaml"} or candidate.exists():
+        return candidate
+    return state.projects_dir / f"{candidate.name}.yml"
+
+
 def _print_plan(spec: ProjectSpec) -> None:
     table = Table(title=f"V2 plan for {spec.project}")
     table.add_column("#", justify="right")
@@ -71,6 +80,46 @@ def _print_runtime(state: V2State) -> None:
     table.add_row("WSL", "yes" if state.runtime.is_wsl else "no")
     table.add_row("Local deployment", "yes" if state.runtime.supports_local_deployment else "no")
     console.print(table)
+
+
+def _print_project_summary(spec: ProjectSpec, config_path: Path) -> None:
+    table = Table(title=f"Project file: {spec.project}")
+    table.add_column("Field")
+    table.add_column("Value")
+    table.add_row("Project", spec.project)
+    table.add_row("Branch", spec.branch)
+    table.add_row("Domain", spec.domain)
+    table.add_row("Repo", spec.repo)
+    table.add_row("Path", str(spec.path))
+    table.add_row("Venv", str(spec.venv))
+    table.add_row("Static", str(spec.static_dir))
+    table.add_row("Media", str(spec.media_dir))
+    table.add_row("Backend", spec.connection.backend)
+    table.add_row("Web server", spec.target.web_server)
+    table.add_row("App server", spec.target.app_server)
+    table.add_row("SSL", spec.target.ssl_provider)
+    table.add_row("Config file", str(config_path))
+    console.print(table)
+
+
+def _template_from_spec(spec: ProjectSpec, *, project: str | None = None, path: Path | None = None) -> ProjectTemplate:
+    return ProjectTemplate(
+        project=project or spec.project,
+        domain=spec.domain,
+        repo=spec.repo,
+        path=path or spec.path,
+        branch=spec.branch,
+        user=spec.user,
+        group=spec.group,
+        wsgi=spec.wsgi,
+        python=spec.python,
+        venv=spec.venv,
+        static_dir=spec.static_dir,
+        media_dir=spec.media_dir,
+        workers=spec.workers,
+        target=spec.target,
+        connection=spec.connection,
+    )
 
 
 def _run_engine(action):
@@ -244,12 +293,138 @@ def config_new(
     console.print(f"[green]Config file created: {destination}[/green]")
 
 
+@projects_app.command("list")
+def projects_list(ctx: typer.Context) -> None:
+    state = _state(ctx)
+    state.projects_dir.mkdir(parents=True, exist_ok=True)
+    project_files = sorted(
+        [*state.projects_dir.glob("*.yml"), *state.projects_dir.glob("*.yaml")],
+        key=lambda item: item.stem.lower(),
+    )
+    if not project_files:
+        console.print("[yellow]No project configuration files found.[/yellow]")
+        return
+
+    table = Table(title="V2 projects")
+    table.add_column("Project")
+    table.add_column("Branch")
+    table.add_column("Backend")
+    table.add_column("Web")
+    table.add_column("Path")
+    table.add_column("Config")
+    for config_path in project_files:
+        try:
+            spec = load_project_spec(config_path, projects_dir=state.projects_dir)
+        except V2ConfigError as exc:
+            table.add_row(config_path.stem, "[red]invalid[/red]", "-", "-", "-", f"[red]{exc}[/red]")
+            continue
+        table.add_row(spec.project, spec.branch, spec.connection.backend, spec.target.web_server, str(spec.path), str(config_path))
+    console.print(table)
+
+
+@projects_app.command("show")
+def projects_show(ctx: typer.Context, project: str) -> None:
+    state = _state(ctx)
+    config_path = _project_config_path(project, state)
+    spec = _load_spec(project, state)
+    _print_project_summary(spec, config_path)
+    console.print()
+    console.print(Syntax(config_path.read_text(encoding="utf-8"), "yaml", word_wrap=True, line_numbers=False))
+
+
+@projects_app.command("duplicate")
+def projects_duplicate(
+    ctx: typer.Context,
+    project: str,
+    new_name: str,
+    path: Path | None = typer.Option(None, "--path", help="Optional target path for the duplicated project."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation."),
+    force: bool = typer.Option(False, "--force", help="Overwrite the destination file if it exists."),
+) -> None:
+    state = _state(ctx)
+    spec = _load_spec(project, state)
+    destination = state.projects_dir / f"{new_name}.yml"
+    if destination.exists() and not force:
+        console.print(f"[red]Config file already exists: {destination}[/red]")
+        raise typer.Exit(code=1)
+    if not yes and not typer.confirm(f"Duplicate {spec.project} to {new_name}?", default=False):
+        raise typer.Exit(code=1)
+
+    template = _template_from_spec(spec, project=new_name, path=path or Path(f"/srv/{new_name}"))
+    content = render_project_spec(template)
+    state.projects_dir.mkdir(parents=True, exist_ok=True)
+    if state.dry_run:
+        console.print(f"[yellow][dry-run] Would create config file: {destination}[/yellow]")
+        console.print(content.rstrip())
+        return
+    destination.write_text(content, encoding="utf-8")
+    console.print(f"[green]Project duplicated: {destination}[/green]")
+
+
+@projects_app.command("rename")
+def projects_rename(
+    ctx: typer.Context,
+    project: str,
+    new_name: str,
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation."),
+    force: bool = typer.Option(False, "--force", help="Overwrite the destination file if it exists."),
+) -> None:
+    state = _state(ctx)
+    source = _project_config_path(project, state)
+    spec = _load_spec(project, state)
+    destination = state.projects_dir / f"{new_name}.yml"
+    if destination.exists() and not force:
+        console.print(f"[red]Config file already exists: {destination}[/red]")
+        raise typer.Exit(code=1)
+    if not yes and not typer.confirm(f"Rename {spec.project} to {new_name}?", default=False):
+        raise typer.Exit(code=1)
+
+    template = _template_from_spec(spec, project=new_name)
+    content = render_project_spec(template)
+    if state.dry_run:
+        console.print(f"[yellow][dry-run] Would rename {source} to {destination}[/yellow]")
+        console.print(content.rstrip())
+        return
+
+    state.projects_dir.mkdir(parents=True, exist_ok=True)
+    destination.write_text(content, encoding="utf-8")
+    if source.resolve() != destination.resolve() and source.exists():
+        source.unlink()
+    console.print(f"[green]Project renamed: {source.name} -> {destination.name}[/green]")
+
+
+@projects_app.command("remove")
+def projects_remove(
+    ctx: typer.Context,
+    project: str,
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation."),
+) -> None:
+    state = _state(ctx)
+    config_path = _project_config_path(project, state)
+    spec = _load_spec(project, state)
+    if not yes and not typer.confirm(f"Delete project config {spec.project}?", default=False):
+        raise typer.Exit(code=1)
+    if state.dry_run:
+        console.print(f"[yellow][dry-run] Would delete config file: {config_path}[/yellow]")
+        return
+    if not config_path.exists():
+        console.print(f"[red]Config file not found: {config_path}[/red]")
+        raise typer.Exit(code=1)
+    config_path.unlink()
+    console.print(f"[green]Project removed: {config_path}[/green]")
+
+
 @app.command("helpers")
 def helpers() -> None:
     table = Table(title="SpeedDeploy V2 helpers")
     table.add_column("Command")
     table.add_column("Use")
     table.add_row("speeddeploy v2 config new", "Generate a backend-aware project YAML file interactively.")
+    table.add_row("speeddeploy v2 projects list", "List every known V2 project configuration.")
+    table.add_row("speeddeploy v2 projects show <project>", "Display one V2 project configuration.")
+    table.add_row("speeddeploy v2 projects duplicate <project> <new>", "Copy a project configuration under a new name.")
+    table.add_row("speeddeploy v2 projects rename <project> <new>", "Rename a project configuration file and project id.")
+    table.add_row("speeddeploy v2 projects remove <project>", "Delete a project configuration file.")
     table.add_row("speeddeploy v2 doctor <project>", "Inspect runtime, config, executor, and plan.")
     table.add_row("speeddeploy v2 doctor <project> --fix", "Repair Git ownership and safe.directory issues.")
     table.add_row("speeddeploy v2 plan <project>", "Preview the V2 deployment plan.")
@@ -396,3 +571,4 @@ def superuser(ctx: typer.Context, project: str) -> None:
 
 
 app.add_typer(config_app, name="config")
+app.add_typer(projects_app, name="projects")
