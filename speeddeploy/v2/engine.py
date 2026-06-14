@@ -391,6 +391,15 @@ def _provision_ssl(executor: Executor, spec: ProjectSpec) -> None:
     executor.run(["certbot", "--standalone", "-d", spec.domain], sudo=True)
 
 
+def _reload_web_server(executor: Executor, spec: ProjectSpec) -> None:
+    if spec.target.web_server == "apache":
+        executor.run(["systemctl", "reload", "apache2"], sudo=True)
+        return
+    if spec.target.web_server == "nginx":
+        executor.run(["systemctl", "reload", "nginx"], sudo=True)
+        return
+
+
 @dataclass(slots=True)
 class DeploymentEngine:
     """High-level deployment orchestration for V2."""
@@ -425,36 +434,41 @@ class DeploymentEngine:
         for idx, step in enumerate(self.plan(), start=1):
             console.print(f"{idx}. {step}")
 
+    def _sync_code(self, *, local_changes: LocalChangePolicy = "keep") -> None:
+        _clone_or_update(self.executor, self.spec, local_changes=local_changes)
+        _ensure_python_django_compatibility(self.executor, self.spec)
+        _preflight_django_settings(self.executor, self.spec)
+        _create_venv(self.executor, self.spec)
+        _django_steps(self.executor, self.spec)
+
     def deploy(self, *, local_changes: LocalChangePolicy = "keep") -> None:
         _prepare_paths(self.executor, self.spec)
         _install_packages(self.executor, self.spec)
-        _clone_or_update(self.executor, self.spec, local_changes=local_changes)
-        _ensure_python_django_compatibility(self.executor, self.spec)
-        _preflight_django_settings(self.executor, self.spec)
-        _create_venv(self.executor, self.spec)
-        _django_steps(self.executor, self.spec)
+        self._sync_code(local_changes=local_changes)
+        self.update_conf()
+        self.update_cert()
+
+    def update_code(self, *, local_changes: LocalChangePolicy = "keep") -> None:
+        self._sync_code(local_changes=local_changes)
+        self.restart()
+
+    def update_conf(self) -> None:
         _render_gunicorn(self.executor, self.spec)
         _render_web_server(self.executor, self.spec)
-        _provision_ssl(self.executor, self.spec)
         self.restart()
 
     def update(self, *, local_changes: LocalChangePolicy = "keep") -> None:
-        _clone_or_update(self.executor, self.spec, local_changes=local_changes)
-        _ensure_python_django_compatibility(self.executor, self.spec)
-        _preflight_django_settings(self.executor, self.spec)
-        _create_venv(self.executor, self.spec)
-        _django_steps(self.executor, self.spec)
-        _render_gunicorn(self.executor, self.spec)
-        _render_web_server(self.executor, self.spec)
+        self._sync_code(local_changes=local_changes)
+        self.update_conf()
+        self.update_cert()
+
+    def update_cert(self) -> None:
         _provision_ssl(self.executor, self.spec)
-        self.restart()
+        _reload_web_server(self.executor, self.spec)
 
     def restart(self) -> None:
         self.executor.run(["systemctl", "restart", f"{self.spec.project}.service"], sudo=True)
-        if self.spec.target.web_server == "apache":
-            self.executor.run(["systemctl", "reload", "apache2"], sudo=True)
-        elif self.spec.target.web_server == "nginx":
-            self.executor.run(["systemctl", "reload", "nginx"], sudo=True)
+        _reload_web_server(self.executor, self.spec)
 
     def status(self) -> None:
         self.executor.run(["systemctl", "status", f"{self.spec.project}.service", "--no-pager"], sudo=True)

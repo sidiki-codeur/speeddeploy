@@ -371,6 +371,11 @@ speeddeploy v2 ssl gestiolocative
 speeddeploy v2 update gestiolocative
 speeddeploy v2 update gestiolocative --keep-local-changes
 speeddeploy v2 update gestiolocative --discard-local-changes
+speeddeploy v2 update-code gestiolocative
+speeddeploy v2 update-code gestiolocative --keep-local-changes
+speeddeploy v2 update-code gestiolocative --discard-local-changes
+speeddeploy v2 update-conf gestiolocative
+speeddeploy v2 update-cert gestiolocative
 ```
 
 ## Guide de configuration
@@ -580,7 +585,17 @@ speeddeploy v2 helpers
 ```bash
 speeddeploy v2 update gestiolocative --keep-local-changes
 speeddeploy v2 update gestiolocative --discard-local-changes
+speeddeploy v2 update-code gestiolocative --keep-local-changes
+speeddeploy v2 update-code gestiolocative --discard-local-changes
 ```
+
+### Mises a jour ciblees
+
+Utilise ces commandes quand tu ne veux pas relancer tout le cycle:
+
+- `speeddeploy v2 update-code <project>` pour mettre a jour uniquement le code, les dependances Python et les migrations
+- `speeddeploy v2 update-conf <project>` pour regenerer Gunicorn et la configuration Apache ou Nginx
+- `speeddeploy v2 update-cert <project>` pour renouveler ou reemettre le certificat SSL
 
 ### Cycle de deploiement
 
@@ -609,6 +624,11 @@ speeddeploy v2 deploy gestiolocative --discard-local-changes
 speeddeploy v2 update gestiolocative
 speeddeploy v2 update gestiolocative --keep-local-changes
 speeddeploy v2 update gestiolocative --discard-local-changes
+speeddeploy v2 update-code gestiolocative
+speeddeploy v2 update-code gestiolocative --keep-local-changes
+speeddeploy v2 update-code gestiolocative --discard-local-changes
+speeddeploy v2 update-conf gestiolocative
+speeddeploy v2 update-cert gestiolocative
 speeddeploy v2 restart gestiolocative
 speeddeploy v2 status gestiolocative
 speeddeploy v2 logs gestiolocative
@@ -626,15 +646,15 @@ Pour un nouveau projet :
 4. lancer `speeddeploy v2 --dry-run deploy <project>`
 5. lancer `speeddeploy v2 deploy <project>`
 6. verifier le site et le SSL
-7. utiliser `speeddeploy v2 update <project>` pour les mises a jour
+7. utiliser `speeddeploy v2 update-code <project>` pour le code, `speeddeploy v2 update-conf <project>` pour la conf, `speeddeploy v2 update-cert <project>` pour le SSL, ou `speeddeploy v2 update <project>` pour tout relancer
 
-Par defaut, `speeddeploy v2 update` conserve les changements locaux.
+Par defaut, `speeddeploy v2 update` et `speeddeploy v2 update-code` conservent les changements locaux.
 Si tu veux imposer un comportement explicite :
 
 - `--keep-local-changes` conserve les changements locaux
 - `--discard-local-changes` supprime les changements locaux avant la mise a jour
 
-Ces deux options sont aussi disponibles sur `speeddeploy v2 deploy` si le depot existe deja.
+Ces deux options sont aussi disponibles sur `speeddeploy v2 deploy` et `speeddeploy v2 update-code` si le depot existe deja.
 
 Pour un serveur local :
 

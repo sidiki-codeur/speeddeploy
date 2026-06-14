@@ -250,9 +250,14 @@ def helpers() -> None:
     table.add_row("speeddeploy v2 deploy <project>", "Run a full deployment with the selected backend.")
     table.add_row("speeddeploy v2 deploy <project> --keep-local-changes", "Keep local Git changes if the repo already exists.")
     table.add_row("speeddeploy v2 deploy <project> --discard-local-changes", "Discard local Git changes if the repo already exists.")
-    table.add_row("speeddeploy v2 update <project>", "Update code, services, and web server config.")
+    table.add_row("speeddeploy v2 update <project>", "Run the full update cycle: code, config, SSL, and restart.")
     table.add_row("speeddeploy v2 update <project> --keep-local-changes", "Stash and restore local changes after pull.")
     table.add_row("speeddeploy v2 update <project> --discard-local-changes", "Discard local changes before pull.")
+    table.add_row("speeddeploy v2 update-code <project>", "Update only the application code and Python environment.")
+    table.add_row("speeddeploy v2 update-code <project> --keep-local-changes", "Keep local Git changes while updating code.")
+    table.add_row("speeddeploy v2 update-code <project> --discard-local-changes", "Discard local Git changes before updating code.")
+    table.add_row("speeddeploy v2 update-conf <project>", "Re-render Gunicorn and web server configuration.")
+    table.add_row("speeddeploy v2 update-cert <project>", "Renew or reissue SSL certificates and reload the web server.")
     console.print(table)
 
 
@@ -305,6 +310,39 @@ def update(
         discard_local_changes=discard_local_changes,
     )
     _run_engine(lambda: engine.update(local_changes=policy))
+
+
+@app.command("update-code")
+def update_code(
+    ctx: typer.Context,
+    project: str,
+    keep_local_changes: bool = typer.Option(False, "--keep-local-changes", help="Keep local Git changes by stashing and restoring them after update."),
+    discard_local_changes: bool = typer.Option(False, "--discard-local-changes", help="Discard local Git changes before updating."),
+) -> None:
+    state = _state(ctx)
+    spec = _load_spec(project, state)
+    engine = build_engine(spec, dry_run=state.dry_run)
+    policy = _resolve_local_changes_policy(
+        keep_local_changes=keep_local_changes,
+        discard_local_changes=discard_local_changes,
+    )
+    _run_engine(lambda: engine.update_code(local_changes=policy))
+
+
+@app.command("update-conf")
+def update_conf(ctx: typer.Context, project: str) -> None:
+    state = _state(ctx)
+    spec = _load_spec(project, state)
+    engine = build_engine(spec, dry_run=state.dry_run)
+    _run_engine(engine.update_conf)
+
+
+@app.command("update-cert")
+def update_cert(ctx: typer.Context, project: str) -> None:
+    state = _state(ctx)
+    spec = _load_spec(project, state)
+    engine = build_engine(spec, dry_run=state.dry_run)
+    _run_engine(engine.update_cert)
 
 
 @app.command("restart")
