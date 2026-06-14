@@ -65,6 +65,71 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
+## Procedure complete sur le serveur
+
+Cette procedure s applique quand tu installes SpeedDeploy directement sur le serveur Linux cible.
+
+### 1. Cloner SpeedDeploy
+
+```bash
+git clone https://github.com/TON_COMPTE/speeddeploy.git
+cd speeddeploy
+```
+
+### 2. Preparer l environnement Python
+
+```bash
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+pip install -e .
+```
+
+Sur Windows, cette etape sert surtout aux tests locaux ou a la preparation des configurations.
+Pour un vrai deploiement serveur, execute SpeedDeploy sur Linux ou via SSH.
+
+### 3. Creer la configuration du projet
+
+```bash
+speeddeploy v2 config new gestiolocative
+```
+
+Ou en mode ligne :
+
+```bash
+speeddeploy v2 config new gestiolocative --backend ssh --host 203.0.113.10 --connection-user root
+```
+
+Le fichier est cree dans `projects/gestiolocative.yml`.
+
+### 4. Verifier le plan de deploiement
+
+```bash
+speeddeploy v2 plan gestiolocative
+```
+
+### 5. Lancer un test a blanc
+
+```bash
+speeddeploy v2 --dry-run deploy gestiolocative
+```
+
+### 6. Deployer le projet
+
+```bash
+speeddeploy v2 deploy gestiolocative
+```
+
+### 7. Passer a l exploitation quotidienne
+
+Une fois le premier deploiement termine, le reste du guide presente toutes les commandes SpeedDeploy pour :
+
+- redemarrer les services
+- consulter les logs
+- mettre a jour le code
+- regenerer le SSL
+- creer un superutilisateur Django
+
 ## Arborescence
 
 ```text
@@ -331,7 +396,7 @@ connection:
 - Garde `target.web_server` a `apache` si tu veux une configuration classique Debian/Ubuntu
 - Passe a `nginx` si tu veux un reverse proxy Nginx devant Gunicorn
 
-## Reference des commandes
+## Toutes les commandes SpeedDeploy
 
 ### CLI principale
 
