@@ -93,6 +93,13 @@ Si le fichier n est pas encore executable apres un clone :
 chmod +x speeddeploy.sh
 ```
 
+Si tu es sur un clone ancien ou si ton shell refuse `./speeddeploy.sh`, utilise :
+
+```bash
+bash speeddeploy.sh v2 plan gestiolocative
+bash speeddeploy.sh helpers
+```
+
 ## Mise en route sur un serveur
 
 Cette procédure part d un serveur Linux vierge et va jusqu a la creation du premier fichier de configuration SpeedDeploy.
