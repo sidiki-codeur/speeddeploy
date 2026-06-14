@@ -93,6 +93,97 @@ Si le fichier n est pas encore executable apres un clone :
 chmod +x speeddeploy.sh
 ```
 
+## Mise en route sur un serveur
+
+Cette procédure part d un serveur Linux vierge et va jusqu a la creation du premier fichier de configuration SpeedDeploy.
+
+### 1. Creer le dossier de travail
+
+```bash
+sudo mkdir -p /opt/speeddeploy
+sudo chown -R $USER:$USER /opt/speeddeploy
+cd /opt/speeddeploy
+```
+
+### 2. Cloner SpeedDeploy
+
+```bash
+git clone https://github.com/TON_COMPTE/speeddeploy.git .
+```
+
+Si tu preferes garder le depot dans un sous-dossier :
+
+```bash
+git clone https://github.com/TON_COMPTE/speeddeploy.git
+cd speeddeploy
+```
+
+### 3. Creer l environnement Python
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+pip install -e .
+```
+
+### 4. Verifier que SpeedDeploy fonctionne
+
+```bash
+./speeddeploy.sh --help
+```
+
+Ou directement :
+
+```bash
+speeddeploy --help
+```
+
+### 5. Creer le dossier des projets
+
+```bash
+mkdir -p projects
+```
+
+### 6. Creer la configuration du projet
+
+Creation interactive locale :
+
+```bash
+speeddeploy v2 config new gestiolocative
+```
+
+Creation pour un deploiement distant :
+
+```bash
+speeddeploy v2 config new gestiolocative --backend ssh --host 203.0.113.10 --connection-user root
+```
+
+Le fichier genere sera :
+
+```bash
+projects/gestiolocative.yml
+```
+
+### 7. Verifier la configuration
+
+```bash
+speeddeploy v2 doctor gestiolocative
+speeddeploy v2 plan gestiolocative
+```
+
+### 8. Lancer un test a blanc
+
+```bash
+speeddeploy v2 --dry-run deploy gestiolocative
+```
+
+### 9. Lancer le premier deploiement
+
+```bash
+speeddeploy v2 deploy gestiolocative
+```
+
 ## Procedure complete sur le serveur
 
 Cette procedure s applique quand tu installes SpeedDeploy directement sur le serveur Linux cible.
@@ -100,7 +191,7 @@ Cette procedure s applique quand tu installes SpeedDeploy directement sur le ser
 ### 1. Cloner SpeedDeploy
 
 ```bash
-git clone https://github.com/TON_COMPTE/speeddeploy.git
+git clone https://github.com/sidiki-codeur/speeddeploy.git
 cd speeddeploy
 ```
 
