@@ -160,11 +160,14 @@ def _ensure_git_safe_directory(executor: Executor, spec: ProjectSpec) -> None:
     if not executor.path_exists(spec.path / ".git"):
         return
 
-    configured = executor.capture(
-        ["git", "config", "--global", "--get-all", "safe.directory"],
-        cwd=spec.path,
-        as_user=spec.user,
-    )
+    try:
+        configured = executor.capture(
+            ["git", "config", "--global", "--get-all", "safe.directory"],
+            cwd=spec.path,
+            as_user=spec.user,
+        )
+    except ExecutorError:
+        configured = ""
     if str(spec.path) in {line.strip() for line in configured.splitlines() if line.strip()}:
         return
 
