@@ -9,7 +9,7 @@ from jinja2 import Environment, PackageLoader
 from rich.console import Console
 
 from .config import ProjectConfig
-from .runner import run
+from .runner import is_dry_run, run
 
 console = Console()
 _TEMPLATE_ENV = Environment(
@@ -43,6 +43,11 @@ def render_apache_config(config: ProjectConfig) -> Path:
     content = _render_template("apache.conf.j2", config)
     temp_path = Path(tempfile.gettempdir()) / f"{config.project}.apache.conf"
     target_path = Path("/etc/apache2/sites-available") / f"{config.project}.conf"
+
+    if is_dry_run():
+        console.print(f"[yellow][dry-run] Would render Apache config to {target_path}[/yellow]")
+        return target_path
+
     temp_path.write_text(content, encoding="utf-8")
 
     try:
@@ -54,5 +59,6 @@ def render_apache_config(config: ProjectConfig) -> Path:
     finally:
         temp_path.unlink(missing_ok=True)
 
-    console.print("[green]Configuration Apache activée.[/green]")
+    if not is_dry_run():
+        console.print("[green]Apache configuration enabled.[/green]")
     return target_path

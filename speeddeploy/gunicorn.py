@@ -9,7 +9,7 @@ from jinja2 import Environment, PackageLoader
 from rich.console import Console
 
 from .config import ProjectConfig
-from .runner import run
+from .runner import is_dry_run, run
 
 console = Console()
 _TEMPLATE_ENV = Environment(
@@ -43,6 +43,11 @@ def render_gunicorn_service(config: ProjectConfig) -> Path:
     content = _render_template("gunicorn.service.j2", config)
     temp_path = Path(tempfile.gettempdir()) / f"{config.project}.service"
     target_path = Path("/etc/systemd/system") / f"{config.project}.service"
+
+    if is_dry_run():
+        console.print(f"[yellow][dry-run] Would render Gunicorn service to {target_path}[/yellow]")
+        return target_path
+
     temp_path.write_text(content, encoding="utf-8")
 
     try:
@@ -53,18 +58,23 @@ def render_gunicorn_service(config: ProjectConfig) -> Path:
     finally:
         temp_path.unlink(missing_ok=True)
 
-    console.print("[green]Service Gunicorn activé.[/green]")
+    if not is_dry_run():
+        console.print("[green]Gunicorn service enabled.[/green]")
     return target_path
 
 
 def restart_gunicorn(config: ProjectConfig) -> None:
+    """Restart the Gunicorn service."""
     run(["systemctl", "restart", f"{config.project}.service"], sudo=True)
-    console.print("[green]Gunicorn redémarré.[/green]")
+    if not is_dry_run():
+        console.print("[green]Gunicorn restarted.[/green]")
 
 
 def status_gunicorn(config: ProjectConfig) -> None:
+    """Show the Gunicorn service status."""
     run(["systemctl", "status", f"{config.project}.service", "--no-pager"], sudo=True)
 
 
 def logs_gunicorn(config: ProjectConfig) -> None:
+    """Show recent Gunicorn logs."""
     run(["journalctl", "-u", f"{config.project}.service", "-n", "100", "--no-pager"], sudo=True)
