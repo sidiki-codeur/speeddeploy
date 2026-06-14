@@ -65,6 +65,34 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
+## Lancement rapide
+
+### Sous Windows
+
+Utilise le fichier `speeddeploy.bat` a la racine du projet :
+
+```bat
+speeddeploy.bat v2 plan gestiolocative
+speeddeploy.bat v2 deploy gestiolocative
+speeddeploy.bat helpers
+```
+
+### Sous Linux
+
+Utilise le fichier `speeddeploy.sh` a la racine du projet :
+
+```bash
+./speeddeploy.sh v2 plan gestiolocative
+./speeddeploy.sh v2 deploy gestiolocative
+./speeddeploy.sh helpers
+```
+
+Si le fichier n est pas encore executable apres un clone :
+
+```bash
+chmod +x speeddeploy.sh
+```
+
 ## Procedure complete sur le serveur
 
 Cette procedure s applique quand tu installes SpeedDeploy directement sur le serveur Linux cible.
