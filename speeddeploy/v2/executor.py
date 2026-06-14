@@ -24,11 +24,25 @@ class Executor(ABC):
     """Abstract command executor."""
 
     @abstractmethod
-    def run(self, command: Sequence[str], *, cwd: str | Path | None = None, sudo: bool = False) -> None:
+    def run(
+        self,
+        command: Sequence[str],
+        *,
+        cwd: str | Path | None = None,
+        sudo: bool = False,
+        as_user: str | None = None,
+    ) -> None:
         raise NotImplementedError
 
     @abstractmethod
-    def capture(self, command: Sequence[str], *, cwd: str | Path | None = None, sudo: bool = False) -> str:
+    def capture(
+        self,
+        command: Sequence[str],
+        *,
+        cwd: str | Path | None = None,
+        sudo: bool = False,
+        as_user: str | None = None,
+    ) -> str:
         raise NotImplementedError
 
     @abstractmethod
@@ -74,10 +88,23 @@ class LocalExecutor(Executor):
             return False
         return not any(candidate.iterdir())
 
-    def run(self, command: Sequence[str], *, cwd: str | Path | None = None, sudo: bool = False) -> None:
-        args = _stringify(command)
+    def _prefix(self, args: list[str], sudo: bool, as_user: str | None) -> list[str]:
+        if as_user:
+            return ["sudo", "-u", as_user, "-H", *args]
         if sudo:
-            args = ["sudo", *args]
+            return ["sudo", *args]
+        return args
+
+    def run(
+        self,
+        command: Sequence[str],
+        *,
+        cwd: str | Path | None = None,
+        sudo: bool = False,
+        as_user: str | None = None,
+    ) -> None:
+        args = _stringify(command)
+        args = self._prefix(args, sudo=sudo, as_user=as_user)
         command_str = shlex.join(args)
         if self.dry_run:
             console.print(f"[yellow][dry-run] $ {command_str}[/yellow]")
@@ -88,10 +115,16 @@ class LocalExecutor(Executor):
         except (FileNotFoundError, subprocess.CalledProcessError) as exc:
             raise ExecutorError(str(exc)) from exc
 
-    def capture(self, command: Sequence[str], *, cwd: str | Path | None = None, sudo: bool = False) -> str:
+    def capture(
+        self,
+        command: Sequence[str],
+        *,
+        cwd: str | Path | None = None,
+        sudo: bool = False,
+        as_user: str | None = None,
+    ) -> str:
         args = _stringify(command)
-        if sudo:
-            args = ["sudo", *args]
+        args = self._prefix(args, sudo=sudo, as_user=as_user)
         command_str = shlex.join(args)
         if self.dry_run:
             console.print(f"[yellow][dry-run] $ {command_str}[/yellow]")
@@ -164,10 +197,23 @@ class SSHExecutor(Executor):
             raise ExecutorError(str(exc)) from exc
         return completed.returncode == 0
 
-    def run(self, command: Sequence[str], *, cwd: str | Path | None = None, sudo: bool = False) -> None:
-        args = _stringify(command)
+    def _prefix(self, args: list[str], sudo: bool, as_user: str | None) -> list[str]:
+        if as_user:
+            return ["sudo", "-u", as_user, "-H", *args]
         if sudo:
-            args = ["sudo", *args]
+            return ["sudo", *args]
+        return args
+
+    def run(
+        self,
+        command: Sequence[str],
+        *,
+        cwd: str | Path | None = None,
+        sudo: bool = False,
+        as_user: str | None = None,
+    ) -> None:
+        args = _stringify(command)
+        args = self._prefix(args, sudo=sudo, as_user=as_user)
         remote = shlex.join(args)
         if cwd is not None:
             remote = f"cd {shlex.quote(str(cwd))} && {remote}"
@@ -182,10 +228,16 @@ class SSHExecutor(Executor):
         except (FileNotFoundError, subprocess.CalledProcessError) as exc:
             raise ExecutorError(str(exc)) from exc
 
-    def capture(self, command: Sequence[str], *, cwd: str | Path | None = None, sudo: bool = False) -> str:
+    def capture(
+        self,
+        command: Sequence[str],
+        *,
+        cwd: str | Path | None = None,
+        sudo: bool = False,
+        as_user: str | None = None,
+    ) -> str:
         args = _stringify(command)
-        if sudo:
-            args = ["sudo", *args]
+        args = self._prefix(args, sudo=sudo, as_user=as_user)
         remote = shlex.join(args)
         if cwd is not None:
             remote = f"cd {shlex.quote(str(cwd))} && {remote}"

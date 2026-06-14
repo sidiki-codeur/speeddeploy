@@ -718,6 +718,7 @@ Verifie que l utilisateur cible peut utiliser `sudo` et que `systemd` est bien p
 
 Si Git affiche `proprietaire douteux detecte` ou `dubious ownership`, SpeedDeploy ajoute automatiquement le depot a `git safe.directory` avant le `pull`.
 Cela arrive quand le dossier du projet est clone sous un compte systeme different de l utilisateur qui execute SpeedDeploy.
+SpeedDeploy V2 lance maintenant les operations Git avec l utilisateur du projet, ce qui evite aussi les erreurs de type `FETCH_HEAD` ou droits insuffisants.
 
 ### Django 6.x avec Python 3.11
 

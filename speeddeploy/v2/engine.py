@@ -160,11 +160,19 @@ def _ensure_git_safe_directory(executor: Executor, spec: ProjectSpec) -> None:
     if not executor.path_exists(spec.path / ".git"):
         return
 
-    configured = executor.capture(["git", "config", "--global", "--get-all", "safe.directory"], cwd=spec.path)
+    configured = executor.capture(
+        ["git", "config", "--global", "--get-all", "safe.directory"],
+        cwd=spec.path,
+        as_user=spec.user,
+    )
     if str(spec.path) in {line.strip() for line in configured.splitlines() if line.strip()}:
         return
 
-    executor.run(["git", "config", "--global", "--add", "safe.directory", str(spec.path)], cwd=spec.path)
+    executor.run(
+        ["git", "config", "--global", "--add", "safe.directory", str(spec.path)],
+        cwd=spec.path,
+        as_user=spec.user,
+    )
 
 
 def _parse_python_version(output: str) -> tuple[int, int, int] | None:
@@ -264,7 +272,7 @@ def _clone_or_update(executor: Executor, spec: ProjectSpec) -> None:
     git_dir = spec.path / ".git"
     if executor.path_exists(git_dir):
         _ensure_git_safe_directory(executor, spec)
-        executor.run(["git", "pull"], cwd=spec.path, sudo=False)
+        executor.run(["git", "pull"], cwd=spec.path, as_user=spec.user)
         executor.run(["chown", "-R", f"{spec.user}:{spec.group}", str(spec.path)], sudo=True)
         return
 
@@ -274,7 +282,7 @@ def _clone_or_update(executor: Executor, spec: ProjectSpec) -> None:
             "Choose an empty directory or a clean target."
         )
 
-    executor.run(["git", "clone", spec.repo, str(spec.path)], cwd=spec.path.parent, sudo=False)
+    executor.run(["git", "clone", spec.repo, str(spec.path)], cwd=spec.path.parent, as_user=spec.user)
     _ensure_git_safe_directory(executor, spec)
     executor.run(["chown", "-R", f"{spec.user}:{spec.group}", str(spec.path)], sudo=True)
 
