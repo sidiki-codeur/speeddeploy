@@ -187,6 +187,53 @@ SpeedDeploy utilise deux blocs de configuration :
 - `target` pour le contexte technique de deploiement
 - `connection` pour le mode d execution
 
+### Configuration en local
+
+La configuration en local sert quand SpeedDeploy est execute directement sur le serveur cible.
+Dans ce mode :
+
+- `connection.backend` vaut `local`
+- aucun `host` SSH n est requis
+- le deploiement s execute sur la machine courante
+- ce mode convient a Linux ou WSL
+
+Exemple :
+
+```yaml
+connection:
+  backend: local
+```
+
+Dans ce cas, il faut simplement renseigner le dossier cible, le repo Git, le domaine, le virtualenv et les parametres `target`.
+
+### Configuration en ligne
+
+La configuration en ligne sert quand SpeedDeploy est execute depuis ton poste de travail et pilote un serveur distant.
+Dans ce mode :
+
+- `connection.backend` vaut `ssh`
+- `connection.host` est obligatoire
+- `connection.port` est optionnel
+- `connection.user` definit l utilisateur SSH
+- `connection.identity_file` peut pointer vers ta cle privee SSH
+
+Exemple :
+
+```yaml
+connection:
+  backend: ssh
+  host: 203.0.113.10
+  port: 22
+  user: root
+  identity_file: C:/Users/Administrateur/.ssh/id_ed25519
+```
+
+Ce mode est utile quand :
+
+- tu developpes sur Windows ou macOS
+- tu veux deployer vers un VPS Linux distant
+- tu ne veux pas installer SpeedDeploy directement sur le serveur
+
 ### Exemple V2
 
 ```yaml
@@ -213,7 +260,7 @@ connection:
   backend: local
 ```
 
-### Exemple SSH
+### Exemple complet en ligne
 
 ```yaml
 project: gestiolocative
@@ -276,6 +323,13 @@ connection:
 - `port` : port SSH, par defaut `22`
 - `user` : utilisateur SSH, optionnel
 - `identity_file` : cle privee SSH, optionnelle
+
+### Comment choisir le bon mode
+
+- Choisis `local` si tu lances SpeedDeploy sur le serveur cible lui-meme
+- Choisis `ssh` si tu lances SpeedDeploy depuis ton poste local vers un serveur distant
+- Garde `target.web_server` a `apache` si tu veux une configuration classique Debian/Ubuntu
+- Passe a `nginx` si tu veux un reverse proxy Nginx devant Gunicorn
 
 ## Reference des commandes
 
@@ -356,6 +410,19 @@ Pour un nouveau projet :
 5. lancer `speeddeploy v2 deploy <project>`
 6. verifier le site et le SSL
 7. utiliser `speeddeploy v2 update <project>` pour les mises a jour
+
+Pour un serveur local :
+
+1. creer une config avec `connection.backend: local`
+2. verifier le plan
+3. executer le deploiement depuis le serveur cible
+
+Pour un serveur distant :
+
+1. creer une config avec `connection.backend: ssh`
+2. verifier que la cle SSH fonctionne
+3. tester avec `--dry-run`
+4. lancer le vrai deploiement
 
 ## Backends de deploiement
 
@@ -470,4 +537,3 @@ Avant de publier le projet :
 4. lancer les verifications syntaxiques localement
 5. tester `speeddeploy v2 config new`
 6. tester `speeddeploy v2 --dry-run deploy <project>`
-
