@@ -369,6 +369,8 @@ speeddeploy v2 ssl gestiolocative
 
 ```bash
 speeddeploy v2 update gestiolocative
+speeddeploy v2 update gestiolocative --keep-local-changes
+speeddeploy v2 update gestiolocative --discard-local-changes
 ```
 
 ## Guide de configuration
@@ -436,6 +438,7 @@ Pour corriger cela :
 - ou baisse la version de Django dans le projet vers une version compatible avec Python 3.11
 
 SpeedDeploy V2 detecte maintenant ce cas avant l installation des dependances.
+Par defaut, `speeddeploy v2 update` conserve les changements locaux en les mettant de cote dans un stash temporaire puis en les restaurant apres le `pull`.
 
 ### Exemple V2
 
@@ -572,6 +575,13 @@ speeddeploy v2 plan gestiolocative
 speeddeploy v2 helpers
 ```
 
+### Mise a jour avec changements locaux
+
+```bash
+speeddeploy v2 update gestiolocative --keep-local-changes
+speeddeploy v2 update gestiolocative --discard-local-changes
+```
+
 ### Cycle de deploiement
 
 ```bash
@@ -594,7 +604,11 @@ speeddeploy superuser gestiolocative
 
 ```bash
 speeddeploy v2 deploy gestiolocative
+speeddeploy v2 deploy gestiolocative --keep-local-changes
+speeddeploy v2 deploy gestiolocative --discard-local-changes
 speeddeploy v2 update gestiolocative
+speeddeploy v2 update gestiolocative --keep-local-changes
+speeddeploy v2 update gestiolocative --discard-local-changes
 speeddeploy v2 restart gestiolocative
 speeddeploy v2 status gestiolocative
 speeddeploy v2 logs gestiolocative
@@ -613,6 +627,14 @@ Pour un nouveau projet :
 5. lancer `speeddeploy v2 deploy <project>`
 6. verifier le site et le SSL
 7. utiliser `speeddeploy v2 update <project>` pour les mises a jour
+
+Par defaut, `speeddeploy v2 update` conserve les changements locaux.
+Si tu veux imposer un comportement explicite :
+
+- `--keep-local-changes` conserve les changements locaux
+- `--discard-local-changes` supprime les changements locaux avant la mise a jour
+
+Ces deux options sont aussi disponibles sur `speeddeploy v2 deploy` si le depot existe deja.
 
 Pour un serveur local :
 
@@ -720,6 +742,7 @@ Si Git affiche `proprietaire douteux detecte` ou `dubious ownership`, SpeedDeplo
 Cela arrive quand le dossier du projet est clone sous un compte systeme different de l utilisateur qui execute SpeedDeploy.
 SpeedDeploy V2 lance maintenant les operations Git avec l utilisateur du projet, ce qui evite aussi les erreurs de type `FETCH_HEAD` ou droits insuffisants.
 Si le depot contient des modifications locales, SpeedDeploy V2 les met automatiquement de cote dans un stash avant le `pull`.
+Si tu veux supprimer les modifications locales au lieu de les conserver, utilise `--discard-local-changes`.
 
 ### Django 6.x avec Python 3.11
 

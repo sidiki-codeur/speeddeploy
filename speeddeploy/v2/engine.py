@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import shlex
 import re
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from jinja2 import Environment, PackageLoader
 from rich.console import Console
@@ -26,6 +27,8 @@ _PYTHON_VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 _DJANGO_REQUIREMENT_RE = re.compile(
     r"(?i)^django\s*([<>=!~]{1,2})\s*([0-9]+(?:\.[0-9]+){0,2})"
 )
+
+LocalChangePolicy = Literal["keep", "discard"]
 
 
 def _render_template(template_name: str, spec: ProjectSpec) -> str:
@@ -183,7 +186,7 @@ def _git_worktree_dirty(executor: Executor, spec: ProjectSpec) -> list[str]:
     return [line for line in status.splitlines() if line.strip()]
 
 
-def _auto_stash_worktree(executor: Executor, spec: ProjectSpec) -> None:
+def _stash_worktree(executor: Executor, spec: ProjectSpec) -> None:
     dirty_entries = _git_worktree_dirty(executor, spec)
     if not dirty_entries:
         return
@@ -195,15 +198,28 @@ def _auto_stash_worktree(executor: Executor, spec: ProjectSpec) -> None:
         )
         return
 
-    console.print(
-        "[yellow]Local Git changes detected. "
-        "SpeedDeploy will create an automatic stash before updating.[/yellow]"
-    )
+    console.print("[yellow]Local Git changes detected. SpeedDeploy will create a stash.[/yellow]")
     executor.run(
         ["git", "stash", "push", "-u", "-m", "speeddeploy auto-stash"],
         cwd=spec.path,
         as_user=spec.user,
     )
+
+
+def _unstash_worktree(executor: Executor, spec: ProjectSpec) -> None:
+    if getattr(executor, "dry_run", False):
+        console.print("[yellow][dry-run] Would restore the last stash[/yellow]")
+        return
+    executor.run(["git", "stash", "pop"], cwd=spec.path, as_user=spec.user)
+
+
+def _discard_worktree(executor: Executor, spec: ProjectSpec) -> None:
+    if getattr(executor, "dry_run", False):
+        console.print("[yellow][dry-run] Would discard local Git changes[/yellow]")
+        return
+    console.print("[yellow]Local Git changes detected. SpeedDeploy will discard them before updating.[/yellow]")
+    executor.run(["git", "reset", "--hard", "HEAD"], cwd=spec.path, as_user=spec.user)
+    executor.run(["git", "clean", "-fd"], cwd=spec.path, as_user=spec.user)
 
 
 def _parse_python_version(output: str) -> tuple[int, int, int] | None:
@@ -299,12 +315,19 @@ def _preflight_django_settings(executor: Executor, spec: ProjectSpec) -> None:
         )
 
 
-def _clone_or_update(executor: Executor, spec: ProjectSpec) -> None:
+def _clone_or_update(executor: Executor, spec: ProjectSpec, *, local_changes: LocalChangePolicy = "keep") -> None:
     git_dir = spec.path / ".git"
     if executor.path_exists(git_dir):
         _ensure_git_safe_directory(executor, spec)
-        _auto_stash_worktree(executor, spec)
+        dirty_entries = _git_worktree_dirty(executor, spec)
+        if dirty_entries:
+            if local_changes == "discard":
+                _discard_worktree(executor, spec)
+            else:
+                _stash_worktree(executor, spec)
         executor.run(["git", "pull"], cwd=spec.path, as_user=spec.user)
+        if dirty_entries and local_changes == "keep":
+            _unstash_worktree(executor, spec)
         executor.run(["chown", "-R", f"{spec.user}:{spec.group}", str(spec.path)], sudo=True)
         return
 
@@ -402,10 +425,10 @@ class DeploymentEngine:
         for idx, step in enumerate(self.plan(), start=1):
             console.print(f"{idx}. {step}")
 
-    def deploy(self) -> None:
+    def deploy(self, *, local_changes: LocalChangePolicy = "keep") -> None:
         _prepare_paths(self.executor, self.spec)
         _install_packages(self.executor, self.spec)
-        _clone_or_update(self.executor, self.spec)
+        _clone_or_update(self.executor, self.spec, local_changes=local_changes)
         _ensure_python_django_compatibility(self.executor, self.spec)
         _preflight_django_settings(self.executor, self.spec)
         _create_venv(self.executor, self.spec)
@@ -415,8 +438,8 @@ class DeploymentEngine:
         _provision_ssl(self.executor, self.spec)
         self.restart()
 
-    def update(self) -> None:
-        _clone_or_update(self.executor, self.spec)
+    def update(self, *, local_changes: LocalChangePolicy = "keep") -> None:
+        _clone_or_update(self.executor, self.spec, local_changes=local_changes)
         _ensure_python_django_compatibility(self.executor, self.spec)
         _preflight_django_settings(self.executor, self.spec)
         _create_venv(self.executor, self.spec)
