@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import shlex
+import re
 from pathlib import Path
 
 from jinja2 import Environment, PackageLoader
@@ -18,6 +20,11 @@ _TEMPLATE_ENV = Environment(
     autoescape=False,
     trim_blocks=True,
     lstrip_blocks=True,
+)
+
+_PYTHON_VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
+_DJANGO_REQUIREMENT_RE = re.compile(
+    r"(?i)^django\s*([<>=!~]{1,2})\s*([0-9]+(?:\.[0-9]+){0,2})"
 )
 
 
@@ -47,6 +54,7 @@ def build_plan(spec: ProjectSpec) -> list[str]:
         f"Install system packages via {spec.target.package_manager}",
         f"Prepare directory: {spec.path}",
         f"Clone or update repository: {spec.repo}",
+        "Check Python and Django version compatibility",
         f"Create virtualenv: {spec.venv}",
         "Install Python dependencies",
         "Run Django migrations and collectstatic",
@@ -148,6 +156,99 @@ def _prepare_paths(executor: Executor, spec: ProjectSpec) -> None:
     executor.run(["chmod", "-R", "775", str(spec.path)], sudo=True)
 
 
+def _parse_python_version(output: str) -> tuple[int, int, int] | None:
+    match = _PYTHON_VERSION_RE.search(output)
+    if not match:
+        return None
+    return tuple(int(part) for part in match.groups())
+
+
+def _parse_django_requirement(requirements_path: Path) -> tuple[str, tuple[int, ...]] | None:
+    if not requirements_path.exists():
+        return None
+
+    for raw_line in requirements_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not line or line.startswith(("-", "--", "git+", "http://", "https://")):
+            continue
+        match = _DJANGO_REQUIREMENT_RE.match(line)
+        if not match:
+            continue
+        operator = match.group(1)
+        version = tuple(int(part) for part in match.group(2).split("."))
+        return operator, version
+    return None
+
+
+def _ensure_python_django_compatibility(executor: Executor, spec: ProjectSpec) -> None:
+    if getattr(executor, "dry_run", False):
+        console.print("[yellow][dry-run] Would check Python/Django compatibility[/yellow]")
+        return
+
+    requirements_path = spec.path / "requirements.txt"
+    django_requirement = _parse_django_requirement(requirements_path)
+    if django_requirement is None:
+        return
+
+    operator, required_version = django_requirement
+    python_output = executor.capture([spec.python, "--version"], cwd=spec.path)
+    python_version = _parse_python_version(python_output)
+    if python_version is None:
+        raise ExecutorError(f"Unable to detect Python version from: {python_output or spec.python}")
+
+    django_major = required_version[0]
+    django_minor = required_version[1] if len(required_version) > 1 else 0
+
+    if django_major >= 6 and python_version < (3, 12, 0):
+        raise ExecutorError(
+            "Incompatible Python/Django combination detected. "
+            f"{requirements_path} requires Django {django_major}.{django_minor} {operator} "
+            f"{'.'.join(str(part) for part in required_version)}, but {spec.python} reports "
+            f"Python {python_version[0]}.{python_version[1]}.{python_version[2]}. "
+            "Django 6.x requires Python >= 3.12. "
+            "Install Python 3.12 on the server or lower the Django version in the project requirements."
+        )
+
+
+def _search_project_file(executor: Executor, spec: ProjectSpec, needle: str) -> str:
+    quoted = shlex.quote(needle)
+    command = [
+        "bash",
+        "-lc",
+        (
+            "grep -R -n -m 1 "
+            "--exclude-dir=.git "
+            "--exclude-dir=venv "
+            "--exclude-dir=__pycache__ "
+            "--exclude-dir=node_modules "
+            f"{quoted} . || true"
+        ),
+    ]
+    return executor.capture(command, cwd=spec.path)
+
+
+def _preflight_django_settings(executor: Executor, spec: ProjectSpec) -> None:
+    if getattr(executor, "dry_run", False):
+        console.print("[yellow][dry-run] Would verify STATIC_ROOT and DEFAULT_AUTO_FIELD[/yellow]")
+        return
+
+    static_root_hit = _search_project_file(executor, spec, "STATIC_ROOT")
+    if not static_root_hit:
+        raise ExecutorError(
+            "Le projet ne declare pas `STATIC_ROOT`. "
+            "Ajoute par exemple `STATIC_ROOT = BASE_DIR / 'staticfiles'` dans le fichier de settings "
+            "avant de lancer `collectstatic`."
+        )
+
+    auto_field_hit = _search_project_file(executor, spec, "DEFAULT_AUTO_FIELD")
+    if not auto_field_hit:
+        console.print(
+            "[yellow]Avertissement: `DEFAULT_AUTO_FIELD` n est pas detecte. "
+            "Ajoute `DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'` dans les settings "
+            "pour supprimer les warnings de migrations.[/yellow]"
+        )
+
+
 def _clone_or_update(executor: Executor, spec: ProjectSpec) -> None:
     git_dir = spec.path / ".git"
     if executor.path_exists(git_dir):
@@ -244,6 +345,8 @@ class DeploymentEngine:
         _prepare_paths(self.executor, self.spec)
         _install_packages(self.executor, self.spec)
         _clone_or_update(self.executor, self.spec)
+        _ensure_python_django_compatibility(self.executor, self.spec)
+        _preflight_django_settings(self.executor, self.spec)
         _create_venv(self.executor, self.spec)
         _django_steps(self.executor, self.spec)
         _render_gunicorn(self.executor, self.spec)
@@ -253,6 +356,8 @@ class DeploymentEngine:
 
     def update(self) -> None:
         _clone_or_update(self.executor, self.spec)
+        _ensure_python_django_compatibility(self.executor, self.spec)
+        _preflight_django_settings(self.executor, self.spec)
         _create_venv(self.executor, self.spec)
         _django_steps(self.executor, self.spec)
         _render_gunicorn(self.executor, self.spec)

@@ -425,6 +425,18 @@ Ce mode est utile quand :
 - tu veux deployer vers un VPS Linux distant
 - tu ne veux pas installer SpeedDeploy directement sur le serveur
 
+### Attention a la compatibilite Python / Django
+
+Si ton projet utilise `Django 6.x`, le serveur doit avoir Python 3.12 ou plus recent.
+Avec Python 3.11, l installation echouera.
+
+Pour corriger cela :
+
+- renseigne `python: python3.12` si Python 3.12 est installe
+- ou baisse la version de Django dans le projet vers une version compatible avec Python 3.11
+
+SpeedDeploy V2 detecte maintenant ce cas avant l installation des dependances.
+
 ### Exemple V2
 
 ```yaml
@@ -701,6 +713,34 @@ Lance la commande sur le serveur Linux cible, ou utilise le backend SSH.
 ### Erreurs systemd ou sudo
 
 Verifie que l utilisateur cible peut utiliser `sudo` et que `systemd` est bien present sur le serveur.
+
+### Django 6.x avec Python 3.11
+
+Si `pip` refuse `Django==6.0.x`, le serveur n a probablement pas une version de Python assez recente.
+Dans ce cas :
+
+- installe Python 3.12 sur le serveur
+- ou passe le projet sur une version de Django compatible avec Python 3.11
+
+### `collectstatic` demande `STATIC_ROOT`
+
+Si `collectstatic` affiche une erreur du type `STATIC_ROOT setting to a filesystem path`, le projet Django ne declare pas encore `STATIC_ROOT`.
+Ajoute dans les settings quelque chose comme :
+
+```python
+STATIC_ROOT = BASE_DIR / "staticfiles"
+```
+
+SpeedDeploy V2 verifie maintenant ce point avant de lancer `collectstatic`.
+
+### Warnings `DEFAULT_AUTO_FIELD`
+
+Les warnings sur `DEFAULT_AUTO_FIELD` ne bloquent pas le deploiement, mais ils indiquent que le projet peut encore utiliser l ancien type de cle primaire automatique.
+Pour les supprimer, ajoute dans les settings :
+
+```python
+DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+```
 
 ## Notes de securite
 

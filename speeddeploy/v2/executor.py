@@ -28,6 +28,10 @@ class Executor(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def capture(self, command: Sequence[str], *, cwd: str | Path | None = None, sudo: bool = False) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
     def write_text(self, path: str | Path, content: str, *, sudo: bool = False, mode: str = "0644") -> None:
         raise NotImplementedError
 
@@ -83,6 +87,27 @@ class LocalExecutor(Executor):
             subprocess.run(args, cwd=str(cwd) if cwd is not None else None, check=True)
         except (FileNotFoundError, subprocess.CalledProcessError) as exc:
             raise ExecutorError(str(exc)) from exc
+
+    def capture(self, command: Sequence[str], *, cwd: str | Path | None = None, sudo: bool = False) -> str:
+        args = _stringify(command)
+        if sudo:
+            args = ["sudo", *args]
+        command_str = shlex.join(args)
+        if self.dry_run:
+            console.print(f"[yellow][dry-run] $ {command_str}[/yellow]")
+            return ""
+        console.print(f"[cyan]$ {command_str}[/cyan]")
+        try:
+            completed = subprocess.run(
+                args,
+                cwd=str(cwd) if cwd is not None else None,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+            raise ExecutorError(str(exc)) from exc
+        return (completed.stdout or completed.stderr).strip()
 
     def write_text(self, path: str | Path, content: str, *, sudo: bool = False, mode: str = "0644") -> None:
         target = Path(path)
@@ -156,6 +181,30 @@ class SSHExecutor(Executor):
             subprocess.run(ssh_args, check=True)
         except (FileNotFoundError, subprocess.CalledProcessError) as exc:
             raise ExecutorError(str(exc)) from exc
+
+    def capture(self, command: Sequence[str], *, cwd: str | Path | None = None, sudo: bool = False) -> str:
+        args = _stringify(command)
+        if sudo:
+            args = ["sudo", *args]
+        remote = shlex.join(args)
+        if cwd is not None:
+            remote = f"cd {shlex.quote(str(cwd))} && {remote}"
+        ssh_args = [*self._prefix(), "bash", "-lc", remote]
+        command_str = shlex.join(ssh_args)
+        if self.dry_run:
+            console.print(f"[yellow][dry-run] $ {command_str}[/yellow]")
+            return ""
+        console.print(f"[cyan]$ {command_str}[/cyan]")
+        try:
+            completed = subprocess.run(
+                ssh_args,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+            raise ExecutorError(str(exc)) from exc
+        return (completed.stdout or completed.stderr).strip()
 
     def write_text(self, path: str | Path, content: str, *, sudo: bool = False, mode: str = "0644") -> None:
         destination = str(path)
