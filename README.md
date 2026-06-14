@@ -6,7 +6,7 @@ Le projet dispose maintenant de deux niveaux :
 - V1, le flux local historique
 - V2, le moteur moderne avec prise en charge de `local` et `ssh`
 
-V2 est le chemin recommande pour les nouveaux projets.
+V2 est le chemin principal et recommande pour les nouveaux projets.
 
 ## Ce que SpeedDeploy automatise
 
@@ -157,13 +157,13 @@ mkdir -p projects
 Creation interactive locale :
 
 ```bash
-speeddeploy v2 config new gestiolocative
+speeddeploy v2 config new gestiolocative --branch main
 ```
 
 Creation pour un deploiement distant :
 
 ```bash
-speeddeploy v2 config new gestiolocative --backend ssh --host 203.0.113.10 --connection-user root
+speeddeploy v2 config new gestiolocative --branch main --backend ssh --host 203.0.113.10 --connection-user root
 ```
 
 Le fichier genere sera :
@@ -217,13 +217,13 @@ Pour un vrai deploiement serveur, execute SpeedDeploy sur Linux ou via SSH.
 ### 3. Creer la configuration du projet
 
 ```bash
-speeddeploy v2 config new gestiolocative
+speeddeploy v2 config new gestiolocative --branch main
 ```
 
 Ou en mode ligne :
 
 ```bash
-speeddeploy v2 config new gestiolocative --backend ssh --host 203.0.113.10 --connection-user root
+speeddeploy v2 config new gestiolocative --branch main --backend ssh --host 203.0.113.10 --connection-user root
 ```
 
 Le fichier est cree dans `projects/gestiolocative.yml`.
@@ -332,7 +332,7 @@ V2 ajoute un vrai modele de deploiement :
 Creation interactive de config V2 :
 
 ```bash
-speeddeploy v2 config new
+speeddeploy v2 config new --branch main
 ```
 
 Creation de config V1 :
@@ -451,6 +451,7 @@ Par defaut, `speeddeploy v2 update` conserve les changements locaux en les metta
 project: gestiolocative
 domain: locative.emanager.cloud
 repo: https://github.com/TON_COMPTE/gestiolocative.git
+branch: main
 path: /srv/gestiolocative
 user: django
 group: www-data
@@ -477,6 +478,7 @@ connection:
 project: gestiolocative
 domain: locative.emanager.cloud
 repo: https://github.com/TON_COMPTE/gestiolocative.git
+branch: main
 path: /srv/gestiolocative
 user: django
 group: www-data
@@ -508,6 +510,7 @@ connection:
 - `project`
 - `domain`
 - `repo`
+- `branch`
 - `path`
 - `user`
 - `group`
@@ -535,6 +538,12 @@ connection:
 - `user` : utilisateur SSH, optionnel
 - `identity_file` : cle privee SSH, optionnelle
 
+### Branche Git
+
+- `branch` : branche Git a suivre pour le clone et les mises a jour
+- par defaut, SpeedDeploy utilise `main`
+- renseigne une autre branche si ton projet deploie depuis `develop`, `release`, ou une branche de production specifique
+
 ### Comment choisir le bon mode
 
 - Choisis `local` si tu lances SpeedDeploy sur le serveur cible lui-meme
@@ -550,6 +559,7 @@ connection:
 | --- | --- |
 | `speeddeploy v2 config new` | Creer un fichier YAML de projet de maniere interactive. |
 | `speeddeploy v2 doctor <project>` | Verifier la configuration, l environnement et le plan avant d executer. |
+| `speeddeploy v2 doctor <project> --fix` | Reparer les droits du depot et `safe.directory`. |
 | `speeddeploy v2 plan <project>` | Afficher la liste exacte des etapes prevues. |
 | `speeddeploy v2 deploy <project>` | Lancer un deploiement complet du projet. |
 | `speeddeploy v2 update <project>` | Relancer tout le cycle: code, configuration, SSL et redemarrage. |
@@ -585,7 +595,7 @@ speeddeploy config new
 speeddeploy config new gestiolocative --domain locative.emanager.cloud --repo https://github.com/TON_COMPTE/gestiolocative.git
 
 speeddeploy v2 config new
-speeddeploy v2 config new gestiolocative --backend ssh --host 203.0.113.10 --connection-user root
+speeddeploy v2 config new gestiolocative --branch main --backend ssh --host 203.0.113.10 --connection-user root
 ```
 
 ### Diagnostic
@@ -750,6 +760,18 @@ speeddeploy v2 restart gestiolocative
 speeddeploy v2 superuser gestiolocative
 ```
 
+## Optimisations du moteur
+
+SpeedDeploy V2 applique maintenant plusieurs optimisations pour reduire le temps d exploitation:
+
+- le virtualenv et les dependances sont reutilises si `requirements.txt` n a pas change
+- `collectstatic` est saute si l arbre du projet n a pas change
+- les fichiers de configuration ne sont reecrits que si leur contenu a vraiment change
+- les dossiers generes `venv/`, `staticfiles/`, `media/` et `.speeddeploy/` sont ignores pendant les operations Git
+- les operations Git utilisent l utilisateur du projet pour eviter les blocages de droits
+
+En pratique, cela reduit les reinstalls, les redemarrages inutiles et les erreurs liees aux permissions.
+
 ## Depannage
 
 ### "Fichier de configuration introuvable"
@@ -789,6 +811,28 @@ Cela arrive quand le dossier du projet est clone sous un compte systeme differen
 SpeedDeploy V2 lance maintenant les operations Git avec l utilisateur du projet, ce qui evite aussi les erreurs de type `FETCH_HEAD` ou droits insuffisants.
 Si le depot contient des modifications locales, SpeedDeploy V2 les met automatiquement de cote dans un stash avant le `pull`.
 Si tu veux supprimer les modifications locales au lieu de les conserver, utilise `--discard-local-changes`.
+
+### Reparation automatique
+
+Si tu veux corriger rapidement les problemes de proprietaire ou de `safe.directory`, lance:
+
+```bash
+speeddeploy v2 doctor gestiolocative --fix
+```
+
+Cette commande ajuste les droits des repertoires de travail et recolle le depot Git a l utilisateur du projet.
+
+### Dossiers generes par le projet
+
+SpeedDeploy ignore maintenant les dossiers generes les plus courants pendant les operations Git :
+
+- `venv/`
+- `staticfiles/`
+- `media/`
+- `.speeddeploy/`
+
+Cela evite que le `stash`, le `clean` ou le `pull` se bloquent sur des fichiers Django generes par le serveur.
+Garde ces dossiers hors de la gestion Git du projet applicatif si possible.
 
 ### Django 6.x avec Python 3.11
 

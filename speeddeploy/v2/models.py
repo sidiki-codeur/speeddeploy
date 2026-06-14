@@ -50,6 +50,7 @@ class ProjectSpec:
     project: str
     domain: str
     repo: str
+    branch: str
     path: Path
     user: str
     group: str
@@ -84,6 +85,7 @@ class ProjectTemplate:
     domain: str
     repo: str
     path: Path
+    branch: str = "main"
     user: str = "django"
     group: str = "www-data"
     wsgi: str = "config.wsgi:application"
@@ -103,6 +105,7 @@ class ProjectTemplate:
             "project": self.project,
             "domain": self.domain,
             "repo": self.repo,
+            "branch": self.branch,
             "path": str(self.path),
             "user": self.user,
             "group": self.group,
@@ -238,13 +241,14 @@ def load_project_spec(project: str | Path, projects_dir: Path | None = None) -> 
     if connection.backend == "ssh" and not connection.host:
         raise V2ConfigError("The `connection.host` field is required when backend is `ssh`.")
 
-    known = set(required) | {"target", "connection", "os", "init_system", "web_server", "app_server", "ssl_provider", "package_manager", "backend", "host", "port", "identity_file"}
+    known = set(required) | {"branch", "target", "connection", "os", "init_system", "web_server", "app_server", "ssl_provider", "package_manager", "backend", "host", "port", "identity_file"}
     extras = {key: value for key, value in data.items() if key not in known}
 
     return ProjectSpec(
         project=require_text("project"),
         domain=require_text("domain"),
         repo=require_text("repo"),
+        branch=str(data.get("branch", "main")).strip() or "main",
         path=_resolve_path(require_text("path"), base_dir),
         user=require_text("user"),
         group=require_text("group"),

@@ -178,7 +178,7 @@ class SSHExecutor(Executor):
     def kind(self) -> str:
         return "ssh"
 
-    def _prefix(self) -> list[str]:
+    def _ssh_prefix(self) -> list[str]:
         args = ["ssh", "-p", str(self.port)]
         if self.identity_file is not None:
             args.extend(["-i", str(self.identity_file)])
@@ -187,7 +187,7 @@ class SSHExecutor(Executor):
         return args
 
     def _probe(self, script: str) -> bool:
-        ssh_args = [*self._prefix(), "bash", "-lc", script]
+        ssh_args = [*self._ssh_prefix(), "bash", "-lc", script]
         if self.dry_run:
             console.print(f"[yellow][dry-run] $ {shlex.join(ssh_args)}[/yellow]")
             return False
@@ -197,7 +197,7 @@ class SSHExecutor(Executor):
             raise ExecutorError(str(exc)) from exc
         return completed.returncode == 0
 
-    def _prefix(self, args: list[str], sudo: bool, as_user: str | None) -> list[str]:
+    def _remote_prefix(self, args: list[str], sudo: bool, as_user: str | None) -> list[str]:
         if as_user:
             return ["sudo", "-u", as_user, "-H", *args]
         if sudo:
@@ -213,11 +213,11 @@ class SSHExecutor(Executor):
         as_user: str | None = None,
     ) -> None:
         args = _stringify(command)
-        args = self._prefix(args, sudo=sudo, as_user=as_user)
+        args = self._remote_prefix(args, sudo=sudo, as_user=as_user)
         remote = shlex.join(args)
         if cwd is not None:
             remote = f"cd {shlex.quote(str(cwd))} && {remote}"
-        ssh_args = [*self._prefix(), "bash", "-lc", remote]
+        ssh_args = [*self._ssh_prefix(), "bash", "-lc", remote]
         command_str = shlex.join(ssh_args)
         if self.dry_run:
             console.print(f"[yellow][dry-run] $ {command_str}[/yellow]")
@@ -237,11 +237,11 @@ class SSHExecutor(Executor):
         as_user: str | None = None,
     ) -> str:
         args = _stringify(command)
-        args = self._prefix(args, sudo=sudo, as_user=as_user)
+        args = self._remote_prefix(args, sudo=sudo, as_user=as_user)
         remote = shlex.join(args)
         if cwd is not None:
             remote = f"cd {shlex.quote(str(cwd))} && {remote}"
-        ssh_args = [*self._prefix(), "bash", "-lc", remote]
+        ssh_args = [*self._ssh_prefix(), "bash", "-lc", remote]
         command_str = shlex.join(ssh_args)
         if self.dry_run:
             console.print(f"[yellow][dry-run] $ {command_str}[/yellow]")
@@ -263,7 +263,7 @@ class SSHExecutor(Executor):
         tee_args = ["tee", destination]
         if sudo:
             tee_args.insert(0, "sudo")
-        ssh_args = [*self._prefix(), *tee_args]
+        ssh_args = [*self._ssh_prefix(), *tee_args]
         command_str = shlex.join(ssh_args)
         if self.dry_run:
             console.print(f"[yellow][dry-run] write {destination} via ssh[/yellow]")

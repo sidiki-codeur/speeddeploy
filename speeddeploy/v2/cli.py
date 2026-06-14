@@ -14,7 +14,7 @@ from .executor import ExecutorError
 from .models import ConnectionSpec, DeploymentTarget, ProjectSpec, ProjectTemplate, V2ConfigError, load_project_spec, render_project_spec
 from ..system import RuntimeInfo, detect_runtime
 
-app = typer.Typer(add_completion=False, help="SpeedDeploy V2 deployment CLI.")
+app = typer.Typer(add_completion=False, help="SpeedDeploy V2 primary deployment CLI.")
 config_app = typer.Typer(add_completion=False, help="Create and inspect V2 project config files.")
 console = Console()
 
@@ -109,6 +109,7 @@ def _build_template(
     project: str | None,
     domain: str | None,
     repo: str | None,
+    branch: str | None,
     path: Path | None,
     user: str | None,
     group: str | None,
@@ -129,6 +130,7 @@ def _build_template(
 ) -> ProjectTemplate:
     project_name = _prompt_text("Project name", project)
     target_path = _prompt_optional_path("Target path", path, Path(f"/srv/{project_name}"))
+    branch_value = _prompt_text("Git branch", branch, "main")
     backend_value = _prompt_text("Backend", backend, "local").lower()
     if backend_value not in {"local", "ssh"}:
         raise typer.BadParameter("Backend must be `local` or `ssh`.")
@@ -166,6 +168,7 @@ def _build_template(
         project=project_name,
         domain=_prompt_text("Domain", domain),
         repo=_prompt_text("Git repository URL", repo),
+        branch=branch_value,
         path=target_path,
         user=_prompt_text("System user", user, "django"),
         group=_prompt_text("System group", group, "www-data"),
@@ -183,6 +186,7 @@ def config_new(
     project: str | None = typer.Argument(None),
     domain: str | None = typer.Option(None, "--domain", "-d"),
     repo: str | None = typer.Option(None, "--repo", "-r"),
+    branch: str | None = typer.Option(None, "--branch", "-b"),
     path: Path | None = typer.Option(None, "--path"),
     user: str | None = typer.Option(None, "--user"),
     group: str | None = typer.Option(None, "--group"),
@@ -207,6 +211,7 @@ def config_new(
         project=project,
         domain=domain,
         repo=repo,
+        branch=branch,
         path=path,
         user=user,
         group=group,
@@ -246,6 +251,7 @@ def helpers() -> None:
     table.add_column("Use")
     table.add_row("speeddeploy v2 config new", "Generate a backend-aware project YAML file interactively.")
     table.add_row("speeddeploy v2 doctor <project>", "Inspect runtime, config, executor, and plan.")
+    table.add_row("speeddeploy v2 doctor <project> --fix", "Repair Git ownership and safe.directory issues.")
     table.add_row("speeddeploy v2 plan <project>", "Preview the V2 deployment plan.")
     table.add_row("speeddeploy v2 deploy <project>", "Run a full deployment with the selected backend.")
     table.add_row("speeddeploy v2 deploy <project> --keep-local-changes", "Keep local Git changes if the repo already exists.")
@@ -262,12 +268,16 @@ def helpers() -> None:
 
 
 @app.command("doctor")
-def doctor(ctx: typer.Context, project: str) -> None:
+def doctor(
+    ctx: typer.Context,
+    project: str,
+    fix: bool = typer.Option(False, "--fix", help="Attempt to repair Git ownership and safe.directory issues."),
+) -> None:
     state = _state(ctx)
     spec = _load_spec(project, state)
     engine = build_engine(spec, dry_run=state.dry_run)
     _print_runtime(state)
-    engine.doctor()
+    engine.doctor(fix=fix)
 
 
 @app.command("plan")

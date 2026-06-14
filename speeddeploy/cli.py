@@ -27,7 +27,7 @@ from .ssl import install_ssl
 from .system import RuntimeInfo, detect_runtime
 from .v2.cli import app as v2_app
 
-app = typer.Typer(add_completion=False, help="SpeedDeploy deployment CLI.")
+app = typer.Typer(add_completion=False, help="SpeedDeploy deployment CLI. V2 is the primary engine.")
 config_app = typer.Typer(add_completion=False, help="Create and inspect project config files.")
 console = Console()
 
