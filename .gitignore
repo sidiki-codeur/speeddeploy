@@ -7,4 +7,6 @@ __pycache__/
 dist/
 build/
 *.egg-info/
-projects/*-secret.yml
+# Project configuration files must never be pushed to GitHub
+projects/*
+!projects/.gitkeep
