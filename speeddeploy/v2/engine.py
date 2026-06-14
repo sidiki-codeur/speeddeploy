@@ -178,6 +178,34 @@ def _ensure_git_safe_directory(executor: Executor, spec: ProjectSpec) -> None:
     )
 
 
+def _git_worktree_dirty(executor: Executor, spec: ProjectSpec) -> list[str]:
+    status = executor.capture(["git", "status", "--porcelain"], cwd=spec.path, as_user=spec.user)
+    return [line for line in status.splitlines() if line.strip()]
+
+
+def _auto_stash_worktree(executor: Executor, spec: ProjectSpec) -> None:
+    dirty_entries = _git_worktree_dirty(executor, spec)
+    if not dirty_entries:
+        return
+
+    if getattr(executor, "dry_run", False):
+        console.print(
+            "[yellow][dry-run] Would stash local changes before updating: "
+            f"{', '.join(dirty_entries[:5])}[/yellow]"
+        )
+        return
+
+    console.print(
+        "[yellow]Local Git changes detected. "
+        "SpeedDeploy will create an automatic stash before updating.[/yellow]"
+    )
+    executor.run(
+        ["git", "stash", "push", "-u", "-m", "speeddeploy auto-stash"],
+        cwd=spec.path,
+        as_user=spec.user,
+    )
+
+
 def _parse_python_version(output: str) -> tuple[int, int, int] | None:
     match = _PYTHON_VERSION_RE.search(output)
     if not match:
@@ -275,6 +303,7 @@ def _clone_or_update(executor: Executor, spec: ProjectSpec) -> None:
     git_dir = spec.path / ".git"
     if executor.path_exists(git_dir):
         _ensure_git_safe_directory(executor, spec)
+        _auto_stash_worktree(executor, spec)
         executor.run(["git", "pull"], cwd=spec.path, as_user=spec.user)
         executor.run(["chown", "-R", f"{spec.user}:{spec.group}", str(spec.path)], sudo=True)
         return
@@ -362,6 +391,14 @@ class DeploymentEngine:
         console.print(f"[bold]OS:[/bold] {self.spec.target.os}")
         console.print(f"[bold]Init system:[/bold] {self.spec.target.init_system}")
         console.print(f"[bold]Package manager:[/bold] {self.spec.target.package_manager}")
+        if self.executor.path_exists(self.spec.path / ".git"):
+            dirty_entries = _git_worktree_dirty(self.executor, self.spec)
+            if dirty_entries:
+                console.print("[yellow]Local Git changes detected:[/yellow]")
+                for entry in dirty_entries[:10]:
+                    console.print(f"  - {entry}")
+            else:
+                console.print("[green]Git worktree clean.[/green]")
         for idx, step in enumerate(self.plan(), start=1):
             console.print(f"{idx}. {step}")
 
