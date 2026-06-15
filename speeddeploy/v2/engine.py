@@ -362,7 +362,7 @@ def _store_requirements_cache(executor: Executor, ctx: DeployContext) -> None:
         return
     executor.run(["mkdir", "-p", str(ctx.state_dir)], sudo=True)
     executor.run(["chown", "-R", f"{ctx.spec.user}:{ctx.spec.group}", str(ctx.state_dir)], sudo=True)
-    executor.write_text(_requirements_cache_file(ctx), f"{_file_sha256(executor, requirements_path, ctx)}\n", sudo=False)
+    executor.write_text(_requirements_cache_file(ctx), f"{_file_sha256(executor, requirements_path, ctx)}\n", sudo=True)
 
 
 def _collectstatic_cache_matches(executor: Executor, ctx: DeployContext) -> bool:
@@ -383,7 +383,7 @@ def _store_collectstatic_cache(executor: Executor, ctx: DeployContext) -> None:
         return
     executor.run(["mkdir", "-p", str(ctx.state_dir)], sudo=True)
     executor.run(["chown", "-R", f"{ctx.spec.user}:{ctx.spec.group}", str(ctx.state_dir)], sudo=True)
-    executor.write_text(_collectstatic_cache_file(ctx), f"{current}\n", sudo=False)
+    executor.write_text(_collectstatic_cache_file(ctx), f"{current}\n", sudo=True)
 
 
 def _stash_worktree(executor: Executor, spec: ProjectSpec) -> None:
