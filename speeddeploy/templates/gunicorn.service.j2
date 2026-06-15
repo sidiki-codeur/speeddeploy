@@ -5,9 +5,10 @@ After=network.target
 [Service]
 User={{ user }}
 Group={{ group }}
-WorkingDirectory={{ path }}
+WorkingDirectory={{ app_dir }}
 Environment=PYTHONUNBUFFERED=1
-ExecStart={{ venv }}/bin/gunicorn --workers {{ workers }} --bind unix:{{ path }}/gunicorn.sock {{ wsgi }}
+{% if env_file %}EnvironmentFile=-{{ env_file }}
+{% endif %}ExecStart={{ venv }}/bin/gunicorn --workers {{ workers }} --bind unix:{{ socket }} {{ wsgi }}
 Restart=always
 RestartSec=5
 

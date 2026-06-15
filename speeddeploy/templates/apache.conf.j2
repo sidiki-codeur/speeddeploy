@@ -15,8 +15,8 @@
     ProxyPreserveHost On
     ProxyPass /static !
     ProxyPass /media !
-    ProxyPass / unix:{{ path }}/gunicorn.sock|http://localhost/
-    ProxyPassReverse / unix:{{ path }}/gunicorn.sock|http://localhost/
+    ProxyPass / unix:{{ socket }}|http://localhost/
+    ProxyPassReverse / unix:{{ socket }}|http://localhost/
 
     ErrorLog ${APACHE_LOG_DIR}/{{ project }}_error.log
     CustomLog ${APACHE_LOG_DIR}/{{ project }}_access.log combined

@@ -119,6 +119,10 @@ def _template_from_spec(spec: ProjectSpec, *, project: str | None = None, path: 
         workers=spec.workers,
         target=spec.target,
         connection=spec.connection,
+        releases=spec.releases,
+        healthcheck=spec.healthcheck,
+        database=spec.database,
+        env=dict(spec.env),
     )
 
 
@@ -439,6 +443,9 @@ def helpers() -> None:
     table.add_row("speeddeploy v2 update-code <project> --discard-local-changes", "Discard local Git changes before updating code.")
     table.add_row("speeddeploy v2 update-conf <project>", "Re-render Gunicorn and web server configuration.")
     table.add_row("speeddeploy v2 update-cert <project>", "Renew or reissue SSL certificates and reload the web server.")
+    table.add_row("speeddeploy v2 releases <project>", "List releases and show the active one (releases mode).")
+    table.add_row("speeddeploy v2 rollback <project>", "Reactivate the previous release (releases mode).")
+    table.add_row("speeddeploy v2 backup <project>", "Back up the configured database on demand.")
     console.print(table)
 
 
@@ -568,6 +575,45 @@ def superuser(ctx: typer.Context, project: str) -> None:
     spec = _load_spec(project, state)
     engine = build_engine(spec, dry_run=state.dry_run)
     _run_engine(engine.superuser)
+
+
+@app.command("rollback")
+def rollback(ctx: typer.Context, project: str) -> None:
+    """Reactivate the previous release (requires releases.enabled)."""
+    state = _state(ctx)
+    spec = _load_spec(project, state)
+    engine = build_engine(spec, dry_run=state.dry_run)
+    _run_engine(engine.rollback)
+
+
+@app.command("releases")
+def releases(ctx: typer.Context, project: str) -> None:
+    """List the available releases and highlight the active one."""
+    state = _state(ctx)
+    spec = _load_spec(project, state)
+    if not spec.releases.enabled:
+        console.print("[yellow]Releases are disabled for this project (set releases.enabled: true).[/yellow]")
+        raise typer.Exit(code=0)
+    engine = build_engine(spec, dry_run=state.dry_run)
+    names, current = engine.release_overview()
+    if not names:
+        console.print("[yellow]No releases found yet.[/yellow]")
+        return
+    table = Table(title=f"Releases for {spec.project} (keep {spec.releases.keep})")
+    table.add_column("Release")
+    table.add_column("Active")
+    for name in names:
+        table.add_row(name, "[green]<- current[/green]" if name == current else "")
+    console.print(table)
+
+
+@app.command("backup")
+def backup(ctx: typer.Context, project: str) -> None:
+    """Back up the configured database on demand."""
+    state = _state(ctx)
+    spec = _load_spec(project, state)
+    engine = build_engine(spec, dry_run=state.dry_run)
+    _run_engine(engine.backup_now)
 
 
 app.add_typer(config_app, name="config")

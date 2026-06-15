@@ -551,6 +551,94 @@ connection:
 - Garde `target.web_server` a `apache` si tu veux une configuration classique Debian/Ubuntu
 - Passe a `nginx` si tu veux un reverse proxy Nginx devant Gunicorn
 
+## Deploiement atomique, healthcheck, backups et secrets
+
+La V2 propose quatre blocs de configuration optionnels qui rendent les deploiements plus surs. Ils sont desactives ou neutres par defaut : les projets existants continuent de fonctionner sans modification.
+
+### Bloc `releases` — deploiement atomique et rollback
+
+Quand `releases.enabled: true`, chaque deploiement construit un nouveau dossier `releases/<horodatage>/` (avec son propre virtualenv), puis bascule le lien symbolique `current` de maniere atomique. Le site ne pointe jamais vers une release a moitie construite, et un retour arriere est instantane.
+
+```yaml
+releases:
+  enabled: true   # active la strategie par releases (defaut: false = deploiement en place)
+  keep: 5         # nombre de releases a conserver (les plus anciennes sont purgees)
+```
+
+Arborescence produite sous `path` :
+
+```
+releases/<horodatage>/   un checkout Git par deploiement, avec son venv
+current -> releases/...   lien symbolique vers la release active
+shared/
+  staticfiles/  media/    fichiers partages entre releases (lies dans chaque release)
+  backups/                 sauvegardes de base de donnees
+  .env                     secrets (mode 0640)
+  .speeddeploy/            etat de deploiement
+```
+
+Commandes associees :
+
+```bash
+speeddeploy v2 releases <projet>    # liste les releases et indique l active
+speeddeploy v2 rollback <projet>    # reactive la release precedente
+```
+
+> En mode releases, `deploy`, `update` et `update-code` creent tous une nouvelle release ; le code provient toujours d un clone neuf de la branche, donc les options `--keep/--discard-local-changes` ne s appliquent pas.
+
+### Bloc `healthcheck` — verification post-deploiement
+
+Apres le redemarrage, SpeedDeploy interroge le site via `curl` sur `127.0.0.1` en utilisant le domaine comme en-tete `Host` (cela teste le vrai vhost et le socket Gunicorn sans dependre du DNS public ni du TLS). En mode releases, un echec declenche un **rollback automatique** vers la release precedente.
+
+```yaml
+healthcheck:
+  enabled: true              # defaut: true
+  path: /                    # chemin a tester (ex: /healthz)
+  host: demo.example.com     # par defaut le domaine du projet
+  port: 80                   # optionnel
+  expect_status: [200, 204, 301, 302, 308]
+  timeout: 10                # secondes par tentative
+  retries: 5                 # nombre de tentatives
+  delay: 3                   # secondes entre tentatives
+```
+
+Mets `enabled: false` si ton application n expose pas de page accessible sans authentification.
+
+### Bloc `database` — sauvegarde avant migration
+
+Avant chaque `migrate`, SpeedDeploy sauvegarde la base dans `shared/backups/` (mode releases) ou `path/backups/` (mode en place). Le mot de passe n est jamais passe en ligne de commande ni affiche dans les logs : il transite par un fichier temporaire `0600` (`PGPASSFILE` / `--defaults-extra-file`).
+
+```yaml
+database:
+  engine: postgres      # none (defaut), postgres, mysql, sqlite
+  name: ma_base
+  user: mon_user
+  password: secret      # ou laisse vide et fournis-le via .pgpass cote serveur
+  host: localhost
+  port: 5432
+  sqlite_path: db.sqlite3   # pour engine: sqlite, relatif au code
+  keep: 5                   # nombre de sauvegardes a conserver
+```
+
+Sauvegarde a la demande :
+
+```bash
+speeddeploy v2 backup <projet>
+```
+
+### Bloc `env` — fichier `.env` et secrets
+
+Les variables declarees sous `env:` sont ecrites dans un fichier `.env` cote serveur (permissions `0640`, proprietaire `user:group`) et injectees dans le service systemd via `EnvironmentFile=`. Le contenu n est jamais affiche dans les logs.
+
+```yaml
+env:
+  DJANGO_SETTINGS_MODULE: monprojet.settings.prod
+  SECRET_KEY: "une-cle-secrete"
+  DATABASE_URL: "postgres://user:pass@localhost/ma_base"
+```
+
+> Le fichier projet contenant ces secrets est ignore par Git (tout le dossier `projects/` est exclu). Ne committe jamais de secrets.
+
 ## Gestion des projets
 
 La V2 inclut aussi des commandes pour administrer les fichiers de configuration projet.
@@ -806,6 +894,7 @@ speeddeploy v2 superuser gestiolocative
 SpeedDeploy V2 applique maintenant plusieurs optimisations pour reduire le temps d exploitation:
 
 - le virtualenv et les dependances sont reutilises si `requirements.txt` n a pas change
+- un virtualenv partiel ou corrompu est nettoye puis reconstruit automatiquement
 - `collectstatic` est saute si l arbre du projet n a pas change
 - les fichiers de configuration ne sont reecrits que si leur contenu a vraiment change
 - les dossiers generes `venv/`, `staticfiles/`, `media/` et `.speeddeploy/` sont ignores pendant les operations Git

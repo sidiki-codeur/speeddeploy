@@ -1,18 +1,37 @@
-"""V2 deployment engine and backend selection."""
+"""V2 deployment engine and backend selection.
+
+Two deployment strategies are supported:
+
+* **In-place** (default): the repository is cloned/updated directly in
+  ``spec.path`` and services are restarted in place.
+* **Releases** (``releases.enabled: true``): every deploy builds a fresh
+  ``releases/<timestamp>`` checkout with its own virtualenv, then an atomic
+  ``current`` symlink swap activates it. A failed post-deploy healthcheck rolls
+  the symlink back automatically, and ``rollback`` reactivates the previous
+  release on demand.
+
+Both strategies render an optional ``.env`` file and back up the configured
+database before running migrations.
+"""
 
 from __future__ import annotations
 
 import shlex
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
 from jinja2 import Environment, PackageLoader
 from rich.console import Console
 
+from .backup import backup_database
+from .envfile import write_env_file
 from .executor import Executor, ExecutorError, LocalExecutor, SSHExecutor
+from .health import HealthcheckError, run_healthcheck
 from .models import ProjectSpec
+from . import releases as rel
 
 console = Console()
 
@@ -35,40 +54,74 @@ _REQ_HASH_FILE = "requirements.hash"
 _COLLECTSTATIC_HASH_FILE = "collectstatic.hash"
 
 
-def _render_template(template_name: str, spec: ProjectSpec) -> str:
+def _timestamp() -> str:
+    return datetime.now().strftime("%Y%m%d-%H%M%S")
+
+
+@dataclass(frozen=True, slots=True)
+class DeployContext:
+    """Resolved paths for one deployment operation.
+
+    ``work_dir`` / ``build_venv`` / ``state_dir`` / ``backup_dir`` describe where
+    code is built for *this* operation. ``app_dir`` / ``runtime_venv`` /
+    ``static_dir`` / ``media_dir`` / ``env_file`` / ``socket`` are the *stable*
+    paths referenced by the systemd unit and web server config (the ``current``
+    symlink in release mode), so those configs survive symlink swaps unchanged.
+    """
+
+    spec: ProjectSpec
+    work_dir: Path
+    build_venv: Path
+    state_dir: Path
+    backup_dir: Path
+    app_dir: Path
+    runtime_venv: Path
+    static_dir: Path
+    media_dir: Path
+    env_file: Path
+    socket: Path
+    use_cache: bool
+    release_dir: Path | None = None
+
+    @property
+    def build_venv_bin(self) -> Path:
+        return self.build_venv / "bin"
+
+
+def _render_template(template_name: str, ctx: DeployContext) -> str:
+    spec = ctx.spec
     template = _TEMPLATE_ENV.get_template(template_name)
     return template.render(
         project=spec.project,
         domain=spec.domain,
         repo=spec.repo,
-        path=str(spec.path),
+        path=str(ctx.app_dir),
+        app_dir=str(ctx.app_dir),
+        socket=str(ctx.socket),
         user=spec.user,
         group=spec.group,
         wsgi=spec.wsgi,
         python=spec.python,
-        venv=str(spec.venv),
-        static_dir=str(spec.static_dir),
-        media_dir=str(spec.media_dir),
+        venv=str(ctx.runtime_venv),
+        static_dir=str(ctx.static_dir),
+        media_dir=str(ctx.media_dir),
         workers=spec.workers,
         target=spec.target,
         connection=spec.connection,
+        env_file=str(ctx.env_file) if spec.env else "",
     )
 
 
-def _state_dir(spec: ProjectSpec) -> Path:
-    return spec.path / _STATE_DIR_NAME
+def _requirements_file(ctx: DeployContext) -> Path:
+    return ctx.work_dir / "requirements.txt"
 
 
-def _requirements_file(spec: ProjectSpec) -> Path:
-    return spec.path / "requirements.txt"
+def _requirements_cache_file(ctx: DeployContext) -> Path:
+    return ctx.state_dir / _REQ_HASH_FILE
 
 
-def _requirements_cache_file(spec: ProjectSpec) -> Path:
-    return _state_dir(spec) / _REQ_HASH_FILE
-
-
-def _collectstatic_cache_file(spec: ProjectSpec) -> Path:
-    return _state_dir(spec) / _COLLECTSTATIC_HASH_FILE
+def _collectstatic_cache_file(ctx: DeployContext) -> Path:
+    return ctx.state_dir / _COLLECTSTATIC_HASH_FILE
 
 
 def _write_if_changed(executor: Executor, path: Path, content: str, *, sudo: bool = False, mode: str = "0644") -> bool:
@@ -93,12 +146,12 @@ def _read_cached_text(executor: Executor, path: Path, *, sudo: bool = False) -> 
         return None
 
 
-def _file_sha256(executor: Executor, path: Path, spec: ProjectSpec) -> str:
-    output = executor.capture(["sha256sum", str(path)], cwd=spec.path, as_user=spec.user)
+def _file_sha256(executor: Executor, path: Path, ctx: DeployContext) -> str:
+    output = executor.capture(["sha256sum", str(path)], cwd=ctx.work_dir, as_user=ctx.spec.user)
     return output.split()[0].strip()
 
 
-def _project_tree_hash(executor: Executor, spec: ProjectSpec) -> str:
+def _project_tree_hash(executor: Executor, ctx: DeployContext) -> str:
     script = """
 set -e
 find . \
@@ -115,33 +168,47 @@ find . \
 | sha256sum \
 | awk '{print $1}'
 """.strip()
-    return executor.capture(["bash", "-lc", script], cwd=spec.path, as_user=spec.user).strip()
+    return executor.capture(["bash", "-lc", script], cwd=ctx.work_dir, as_user=ctx.spec.user).strip()
 
 
 def build_plan(spec: ProjectSpec) -> list[str]:
     steps = [
         f"Select backend: {spec.connection.backend}",
         f"Install system packages via {spec.target.package_manager}",
-        f"Prepare directory: {spec.path}",
-        f"Clone or update repository: {spec.repo} (branch {spec.branch})",
-        "Check Python and Django version compatibility",
-        f"Create virtualenv: {spec.venv}",
-        "Reuse dependency cache when requirements.txt is unchanged",
-        "Reuse collectstatic cache when project tree is unchanged",
-        "Install Python dependencies",
-        "Run Django migrations and collectstatic",
-        f"Render Gunicorn service: {spec.service_name}.service",
     ]
+    if spec.releases.enabled:
+        steps.append(f"Prepare release layout under {spec.path}")
+        steps.append(f"Create new release from {spec.repo} (branch {spec.branch})")
+        steps.append("Link shared static/media/.env into the release")
+    else:
+        steps.append(f"Prepare directory: {spec.path}")
+        steps.append(f"Clone or update repository: {spec.repo} (branch {spec.branch})")
+    if spec.env:
+        steps.append(f"Render environment file ({len(spec.env)} var(s))")
+    steps.append("Check Python and Django version compatibility")
+    steps.append(f"Create virtualenv and install dependencies")
+    if spec.database.enabled:
+        steps.append(f"Back up {spec.database.engine} database before migrations")
+    steps.append("Run Django migrations and collectstatic")
+    steps.append(f"Render Gunicorn service: {spec.service_name}.service")
     if spec.target.web_server == "apache":
         steps.append(f"Render Apache vhost: {spec.project}.conf")
     elif spec.target.web_server == "nginx":
         steps.append(f"Render Nginx site: {spec.project}.conf")
     else:
         steps.append(f"Render web server config: {spec.target.web_server}")
-
+    if spec.releases.enabled:
+        steps.append("Activate release via atomic 'current' symlink swap")
+    steps.append(f"Restart services for {spec.project}")
+    if spec.healthcheck.enabled:
+        if spec.releases.enabled:
+            steps.append("Run healthcheck (auto-rollback on failure)")
+        else:
+            steps.append("Run healthcheck")
     if spec.target.ssl_provider not in {"", "none", "disabled"}:
         steps.append(f"Provision SSL via {spec.target.ssl_provider}")
-    steps.append(f"Restart services for {spec.project}")
+    if spec.releases.enabled:
+        steps.append(f"Prune old releases (keep {spec.releases.keep})")
     return steps
 
 
@@ -189,6 +256,14 @@ def _system_packages(spec: ProjectSpec) -> list[str]:
         "pacman": {"apache": ("certbot", "python-certbot-apache"), "nginx": ("certbot", "python-certbot-nginx")},
     }.get(manager, {"apache": ("certbot", "python3-certbot-apache"), "nginx": ("certbot", "python3-certbot-nginx")})
 
+    db_packages = {
+        "apt": {"postgres": ("postgresql-client",), "mysql": ("default-mysql-client",), "sqlite": ("sqlite3",)},
+        "dnf": {"postgres": ("postgresql",), "mysql": ("mariadb",), "sqlite": ("sqlite",)},
+        "yum": {"postgres": ("postgresql",), "mysql": ("mariadb",), "sqlite": ("sqlite",)},
+        "apk": {"postgres": ("postgresql-client",), "mysql": ("mariadb-client",), "sqlite": ("sqlite",)},
+        "pacman": {"postgres": ("postgresql-libs",), "mysql": ("mariadb-clients",), "sqlite": ("sqlite",)},
+    }.get(manager, {"postgres": ("postgresql-client",), "mysql": ("default-mysql-client",), "sqlite": ("sqlite3",)})
+
     packages = list(base_packages)
     web_server = spec.target.web_server.lower()
     if web_server in web_packages:
@@ -197,6 +272,8 @@ def _system_packages(spec: ProjectSpec) -> list[str]:
         packages.extend(certbot_packages[web_server])
     elif spec.target.ssl_provider == "certbot":
         packages.append("certbot")
+    if spec.database.enabled:
+        packages.extend(db_packages.get(spec.database.engine.lower(), ()))
     return packages
 
 
@@ -234,24 +311,24 @@ def _normalize_worktree_ownership(executor: Executor, spec: ProjectSpec) -> None
     executor.run(["chown", "-R", f"{spec.user}:{spec.group}", str(spec.path)], sudo=True)
 
 
-def _ensure_git_safe_directory(executor: Executor, spec: ProjectSpec) -> None:
-    if not executor.path_exists(spec.path / ".git"):
+def _ensure_git_safe_directory(executor: Executor, spec: ProjectSpec, work_dir: Path) -> None:
+    if not executor.path_exists(work_dir / ".git"):
         return
 
     try:
         configured = executor.capture(
             ["git", "config", "--global", "--get-all", "safe.directory"],
-            cwd=spec.path,
+            cwd=work_dir,
             as_user=spec.user,
         )
     except ExecutorError:
         configured = ""
-    if str(spec.path) in {line.strip() for line in configured.splitlines() if line.strip()}:
+    if str(work_dir) in {line.strip() for line in configured.splitlines() if line.strip()}:
         return
 
     executor.run(
-        ["git", "config", "--global", "--add", "safe.directory", str(spec.path)],
-        cwd=spec.path,
+        ["git", "config", "--global", "--add", "safe.directory", str(work_dir)],
+        cwd=work_dir,
         as_user=spec.user,
     )
 
@@ -269,44 +346,42 @@ def _git_worktree_dirty(executor: Executor, spec: ProjectSpec) -> list[str]:
     return dirty_entries
 
 
-def _requirements_cache_matches(executor: Executor, spec: ProjectSpec) -> bool:
-    requirements_path = _requirements_file(spec)
+def _requirements_cache_matches(executor: Executor, ctx: DeployContext) -> bool:
+    requirements_path = _requirements_file(ctx)
     if not executor.path_exists(requirements_path):
         return False
-    cached = _read_cached_text(executor, _requirements_cache_file(spec))
+    cached = _read_cached_text(executor, _requirements_cache_file(ctx))
     if cached is None:
         return False
-    return cached.strip() == _file_sha256(executor, requirements_path, spec)
+    return cached.strip() == _file_sha256(executor, requirements_path, ctx)
 
 
-def _store_requirements_cache(executor: Executor, spec: ProjectSpec) -> None:
-    requirements_path = _requirements_file(spec)
+def _store_requirements_cache(executor: Executor, ctx: DeployContext) -> None:
+    requirements_path = _requirements_file(ctx)
     if not executor.path_exists(requirements_path):
         return
-    state_dir = _state_dir(spec)
-    executor.run(["mkdir", "-p", str(state_dir)], cwd=spec.path, as_user=spec.user)
-    executor.write_text(_requirements_cache_file(spec), f"{_file_sha256(executor, requirements_path, spec)}\n", sudo=False)
+    executor.run(["mkdir", "-p", str(ctx.state_dir)], as_user=ctx.spec.user)
+    executor.write_text(_requirements_cache_file(ctx), f"{_file_sha256(executor, requirements_path, ctx)}\n", sudo=False)
 
 
-def _collectstatic_cache_matches(executor: Executor, spec: ProjectSpec) -> bool:
-    cached = _read_cached_text(executor, _collectstatic_cache_file(spec))
+def _collectstatic_cache_matches(executor: Executor, ctx: DeployContext) -> bool:
+    cached = _read_cached_text(executor, _collectstatic_cache_file(ctx))
     if cached is None:
         return False
     try:
-        current = _project_tree_hash(executor, spec)
+        current = _project_tree_hash(executor, ctx)
     except ExecutorError:
         return False
     return cached.strip() == current
 
 
-def _store_collectstatic_cache(executor: Executor, spec: ProjectSpec) -> None:
+def _store_collectstatic_cache(executor: Executor, ctx: DeployContext) -> None:
     try:
-        current = _project_tree_hash(executor, spec)
+        current = _project_tree_hash(executor, ctx)
     except ExecutorError:
         return
-    state_dir = _state_dir(spec)
-    executor.run(["mkdir", "-p", str(state_dir)], cwd=spec.path, as_user=spec.user)
-    executor.write_text(_collectstatic_cache_file(spec), f"{current}\n", sudo=False)
+    executor.run(["mkdir", "-p", str(ctx.state_dir)], as_user=ctx.spec.user)
+    executor.write_text(_collectstatic_cache_file(ctx), f"{current}\n", sudo=False)
 
 
 def _stash_worktree(executor: Executor, spec: ProjectSpec) -> None:
@@ -386,18 +461,19 @@ def _parse_django_requirement(requirements_path: Path) -> tuple[str, tuple[int, 
     return None
 
 
-def _ensure_python_django_compatibility(executor: Executor, spec: ProjectSpec) -> None:
+def _ensure_python_django_compatibility(executor: Executor, ctx: DeployContext) -> None:
+    spec = ctx.spec
     if getattr(executor, "dry_run", False):
         console.print("[yellow][dry-run] Would check Python/Django compatibility[/yellow]")
         return
 
-    requirements_path = spec.path / "requirements.txt"
+    requirements_path = ctx.work_dir / "requirements.txt"
     django_requirement = _parse_django_requirement(requirements_path)
     if django_requirement is None:
         return
 
     operator, required_version = django_requirement
-    python_output = executor.capture([spec.python, "--version"], cwd=spec.path)
+    python_output = executor.capture([spec.python, "--version"], cwd=ctx.work_dir)
     python_version = _parse_python_version(python_output)
     if python_version is None:
         raise ExecutorError(f"Unable to detect Python version from: {python_output or spec.python}")
@@ -416,7 +492,7 @@ def _ensure_python_django_compatibility(executor: Executor, spec: ProjectSpec) -
         )
 
 
-def _search_project_file(executor: Executor, spec: ProjectSpec, needle: str) -> str:
+def _search_project_file(executor: Executor, ctx: DeployContext, needle: str) -> str:
     quoted = shlex.quote(needle)
     command = [
         "bash",
@@ -430,15 +506,15 @@ def _search_project_file(executor: Executor, spec: ProjectSpec, needle: str) -> 
             f"{quoted} . || true"
         ),
     ]
-    return executor.capture(command, cwd=spec.path)
+    return executor.capture(command, cwd=ctx.work_dir)
 
 
-def _preflight_django_settings(executor: Executor, spec: ProjectSpec) -> None:
+def _preflight_django_settings(executor: Executor, ctx: DeployContext) -> None:
     if getattr(executor, "dry_run", False):
         console.print("[yellow][dry-run] Would verify STATIC_ROOT and DEFAULT_AUTO_FIELD[/yellow]")
         return
 
-    static_root_hit = _search_project_file(executor, spec, "STATIC_ROOT")
+    static_root_hit = _search_project_file(executor, ctx, "STATIC_ROOT")
     if not static_root_hit:
         raise ExecutorError(
             "Le projet ne declare pas `STATIC_ROOT`. "
@@ -446,7 +522,7 @@ def _preflight_django_settings(executor: Executor, spec: ProjectSpec) -> None:
             "avant de lancer `collectstatic`."
         )
 
-    auto_field_hit = _search_project_file(executor, spec, "DEFAULT_AUTO_FIELD")
+    auto_field_hit = _search_project_file(executor, ctx, "DEFAULT_AUTO_FIELD")
     if not auto_field_hit:
         console.print(
             "[yellow]Avertissement: `DEFAULT_AUTO_FIELD` n est pas detecte. "
@@ -459,7 +535,7 @@ def _clone_or_update(executor: Executor, spec: ProjectSpec, *, local_changes: Lo
     git_dir = spec.path / ".git"
     if executor.path_exists(git_dir):
         _normalize_worktree_ownership(executor, spec)
-        _ensure_git_safe_directory(executor, spec)
+        _ensure_git_safe_directory(executor, spec, spec.path)
         dirty_entries = _git_worktree_dirty(executor, spec)
         if dirty_entries:
             if local_changes == "discard":
@@ -484,56 +560,70 @@ def _clone_or_update(executor: Executor, spec: ProjectSpec, *, local_changes: Lo
         )
 
     executor.run(["git", "clone", "--branch", spec.branch, "--single-branch", spec.repo, str(spec.path)], cwd=spec.path.parent, as_user=spec.user)
-    _ensure_git_safe_directory(executor, spec)
+    _ensure_git_safe_directory(executor, spec, spec.path)
     executor.run(["chown", "-R", f"{spec.user}:{spec.group}", str(spec.path)], sudo=True)
 
 
-def _create_venv(executor: Executor, spec: ProjectSpec) -> None:
-    requirements_path = _requirements_file(spec)
+def _create_venv(executor: Executor, ctx: DeployContext) -> None:
+    spec = ctx.spec
+    venv_python = ctx.build_venv_bin / "python"
+    if getattr(executor, "dry_run", False):
+        executor.run([spec.python, "-m", "venv", str(ctx.build_venv)], cwd=ctx.work_dir, as_user=spec.user)
+        executor.run([str(venv_python), "-m", "pip", "install", "--upgrade", "pip"], cwd=ctx.work_dir, as_user=spec.user)
+        executor.run([str(ctx.build_venv_bin / "pip"), "install", "-r", "requirements.txt"], cwd=ctx.work_dir, as_user=spec.user)
+        return
+
+    requirements_path = _requirements_file(ctx)
     if not executor.path_exists(requirements_path):
         raise ExecutorError(f"Missing requirements file: {requirements_path}")
 
-    venv_python = spec.venv_bin / "python"
-    if executor.path_exists(venv_python) and _requirements_cache_matches(executor, spec):
+    if ctx.use_cache and executor.path_exists(venv_python) and _requirements_cache_matches(executor, ctx):
         console.print("[green]Virtualenv already up to date. Skipping dependency install.[/green]")
         return
 
-    executor.run([spec.python, "-m", "venv", str(spec.venv)], cwd=spec.path)
-    executor.run([str(venv_python), "-m", "pip", "install", "--upgrade", "pip"], cwd=spec.path)
-    executor.run([str(spec.venv_bin / "pip"), "install", "-r", "requirements.txt"], cwd=spec.path)
-    _store_requirements_cache(executor, spec)
-    _normalize_worktree_ownership(executor, spec)
+    if executor.path_exists(ctx.build_venv):
+        console.print(f"[yellow]Existing virtualenv detected at {ctx.build_venv}. Rebuilding it.[/yellow]")
+        executor.run(["rm", "-rf", str(ctx.build_venv)], sudo=True)
+
+    executor.run([spec.python, "-m", "venv", str(ctx.build_venv)], cwd=ctx.work_dir, as_user=spec.user)
+    executor.run([str(venv_python), "-m", "pip", "install", "--upgrade", "pip"], cwd=ctx.work_dir, as_user=spec.user)
+    executor.run([str(ctx.build_venv_bin / "pip"), "install", "-r", "requirements.txt"], cwd=ctx.work_dir, as_user=spec.user)
+    if ctx.use_cache:
+        _store_requirements_cache(executor, ctx)
 
 
-def _django_steps(executor: Executor, spec: ProjectSpec) -> None:
-    executor.run([str(spec.venv_bin / "python"), "manage.py", "migrate"], cwd=spec.path)
-    if _collectstatic_cache_matches(executor, spec):
+def _django_steps(executor: Executor, ctx: DeployContext, *, timestamp: str) -> None:
+    spec = ctx.spec
+    backup_database(executor, spec, backup_dir=ctx.backup_dir, work_dir=ctx.work_dir, timestamp=timestamp)
+    executor.run([str(ctx.build_venv_bin / "python"), "manage.py", "migrate"], cwd=ctx.work_dir, as_user=spec.user)
+    if ctx.use_cache and _collectstatic_cache_matches(executor, ctx):
         console.print("[green]collectstatic cache hit. Skipping static collection.[/green]")
-        _normalize_worktree_ownership(executor, spec)
         return
-    executor.run([str(spec.venv_bin / "python"), "manage.py", "collectstatic", "--noinput"], cwd=spec.path)
-    _store_collectstatic_cache(executor, spec)
-    _normalize_worktree_ownership(executor, spec)
+    executor.run([str(ctx.build_venv_bin / "python"), "manage.py", "collectstatic", "--noinput"], cwd=ctx.work_dir, as_user=spec.user)
+    if ctx.use_cache:
+        _store_collectstatic_cache(executor, ctx)
 
 
-def _render_gunicorn(executor: Executor, spec: ProjectSpec) -> bool:
-    content = _render_template("gunicorn.service.j2", spec)
+def _render_gunicorn(executor: Executor, ctx: DeployContext) -> bool:
+    spec = ctx.spec
+    content = _render_template("gunicorn.service.j2", ctx)
     changed = _write_if_changed(executor, Path("/etc/systemd/system") / f"{spec.project}.service", content, sudo=True)
     executor.run(["systemctl", "daemon-reload"], sudo=True)
     executor.run(["systemctl", "enable", f"{spec.project}.service"], sudo=True)
     return changed
 
 
-def _render_web_server(executor: Executor, spec: ProjectSpec) -> bool:
+def _render_web_server(executor: Executor, ctx: DeployContext) -> bool:
+    spec = ctx.spec
     if spec.target.web_server == "apache":
-        content = _render_template("apache.conf.j2", spec)
+        content = _render_template("apache.conf.j2", ctx)
         changed = _write_if_changed(executor, Path("/etc/apache2/sites-available") / f"{spec.project}.conf", content, sudo=True)
         executor.run(["a2enmod", "proxy", "proxy_http", "headers"], sudo=True)
         executor.run(["a2ensite", f"{spec.project}.conf"], sudo=True)
         executor.run(["apache2ctl", "configtest"], sudo=True)
         return changed
     if spec.target.web_server == "nginx":
-        content = _render_template("nginx.conf.j2", spec)
+        content = _render_template("nginx.conf.j2", ctx)
         changed = _write_if_changed(executor, Path("/etc/nginx/sites-available") / f"{spec.project}.conf", content, sudo=True)
         executor.run(["ln", "-sf", f"/etc/nginx/sites-available/{spec.project}.conf", f"/etc/nginx/sites-enabled/{spec.project}.conf"], sudo=True)
         executor.run(["nginx", "-t"], sudo=True)
@@ -569,25 +659,78 @@ class DeploymentEngine:
     spec: ProjectSpec
     executor: Executor
 
+    def _context(self, release_dir: Path | None = None) -> DeployContext:
+        spec = self.spec
+        if spec.releases.enabled:
+            shared = spec.shared_dir
+            app_dir = spec.current_link
+            runtime_venv = app_dir / "venv"
+            state_dir = shared / _STATE_DIR_NAME
+            backup_dir = shared / "backups"
+            static_dir = shared / "staticfiles"
+            media_dir = shared / "media"
+            env_file = shared / ".env"
+            if release_dir is not None:
+                work_dir = release_dir
+                build_venv = release_dir / "venv"
+            else:
+                work_dir = app_dir
+                build_venv = runtime_venv
+            return DeployContext(
+                spec=spec,
+                work_dir=work_dir,
+                build_venv=build_venv,
+                state_dir=state_dir,
+                backup_dir=backup_dir,
+                app_dir=app_dir,
+                runtime_venv=runtime_venv,
+                static_dir=static_dir,
+                media_dir=media_dir,
+                env_file=env_file,
+                socket=spec.socket_path,
+                use_cache=False,
+                release_dir=release_dir,
+            )
+        return DeployContext(
+            spec=spec,
+            work_dir=spec.path,
+            build_venv=spec.venv,
+            state_dir=spec.path / _STATE_DIR_NAME,
+            backup_dir=spec.path / "backups",
+            app_dir=spec.path,
+            runtime_venv=spec.venv,
+            static_dir=spec.static_dir,
+            media_dir=spec.media_dir,
+            env_file=spec.path / ".env",
+            socket=spec.socket_path,
+            use_cache=True,
+        )
+
     def plan(self) -> list[str]:
         return build_plan(self.spec)
 
     def doctor(self, *, fix: bool = False) -> None:
-        console.print(f"[bold]Project:[/bold] {self.spec.project}")
-        console.print(f"[bold]Domain:[/bold] {self.spec.domain}")
-        console.print(f"[bold]Branch:[/bold] {self.spec.branch}")
-        console.print(f"[bold]Connection backend:[/bold] {self.spec.connection.backend}")
-        if self.spec.connection.backend == "ssh":
-            console.print(f"[bold]SSH host:[/bold] {self.spec.connection.host or 'unset'}")
-            console.print(f"[bold]SSH user:[/bold] {self.spec.connection.user or self.spec.user}")
+        spec = self.spec
+        console.print(f"[bold]Project:[/bold] {spec.project}")
+        console.print(f"[bold]Domain:[/bold] {spec.domain}")
+        console.print(f"[bold]Branch:[/bold] {spec.branch}")
+        console.print(f"[bold]Strategy:[/bold] {'releases' if spec.releases.enabled else 'in-place'}")
+        console.print(f"[bold]Connection backend:[/bold] {spec.connection.backend}")
+        if spec.connection.backend == "ssh":
+            console.print(f"[bold]SSH host:[/bold] {spec.connection.host or 'unset'}")
+            console.print(f"[bold]SSH user:[/bold] {spec.connection.user or spec.user}")
         console.print(f"[bold]Executor:[/bold] {self.executor.kind()}")
-        console.print(f"[bold]Web server:[/bold] {self.spec.target.web_server}")
-        console.print(f"[bold]App server:[/bold] {self.spec.target.app_server}")
-        console.print(f"[bold]OS:[/bold] {self.spec.target.os}")
-        console.print(f"[bold]Init system:[/bold] {self.spec.target.init_system}")
-        console.print(f"[bold]Package manager:[/bold] {self.spec.target.package_manager}")
-        if self.executor.path_exists(self.spec.path / ".git"):
-            dirty_entries = _git_worktree_dirty(self.executor, self.spec)
+        console.print(f"[bold]Web server:[/bold] {spec.target.web_server}")
+        console.print(f"[bold]App server:[/bold] {spec.target.app_server}")
+        console.print(f"[bold]Database backups:[/bold] {spec.database.engine}")
+        console.print(f"[bold]Healthcheck:[/bold] {'enabled' if spec.healthcheck.enabled else 'disabled'}")
+        console.print(f"[bold]Env vars:[/bold] {len(spec.env)}")
+        if spec.releases.enabled:
+            names, current = self.release_overview()
+            console.print(f"[bold]Releases:[/bold] {len(names)} (keep {spec.releases.keep})")
+            console.print(f"[bold]Current release:[/bold] {current or 'none'}")
+        elif self.executor.path_exists(spec.path / ".git"):
+            dirty_entries = _git_worktree_dirty(self.executor, spec)
             if dirty_entries:
                 console.print("[yellow]Local Git changes detected:[/yellow]")
                 for entry in dirty_entries[:10]:
@@ -600,54 +743,170 @@ class DeploymentEngine:
             console.print(f"{idx}. {step}")
 
     def fix(self) -> None:
-        targets = [self.spec.path, self.spec.venv, self.spec.static_dir, self.spec.media_dir]
+        spec = self.spec
+        targets = [spec.path, spec.venv, spec.static_dir, spec.media_dir]
+        if spec.releases.enabled:
+            targets = [spec.path]
         seen: set[Path] = set()
         for target in targets:
             candidate = Path(target)
             if candidate in seen or not self.executor.path_exists(candidate):
                 continue
             seen.add(candidate)
-            self.executor.run(["chown", "-R", f"{self.spec.user}:{self.spec.group}", str(candidate)], sudo=True)
-        _ensure_git_safe_directory(self.executor, self.spec)
+            self.executor.run(["chown", "-R", f"{spec.user}:{spec.group}", str(candidate)], sudo=True)
+        if not spec.releases.enabled:
+            _ensure_git_safe_directory(self.executor, spec, spec.path)
         console.print("[green]Ownership and Git safety issues repaired.[/green]")
 
-    def _sync_code(self, *, local_changes: LocalChangePolicy = "keep") -> None:
+    # -- in-place strategy -------------------------------------------------
+
+    def _sync_code(self, *, local_changes: LocalChangePolicy = "keep", timestamp: str) -> None:
+        ctx = self._context()
         _clone_or_update(self.executor, self.spec, local_changes=local_changes)
-        _ensure_python_django_compatibility(self.executor, self.spec)
-        _preflight_django_settings(self.executor, self.spec)
-        _create_venv(self.executor, self.spec)
-        _django_steps(self.executor, self.spec)
+        write_env_file(self.executor, self.spec, ctx.env_file)
+        _ensure_python_django_compatibility(self.executor, ctx)
+        _preflight_django_settings(self.executor, ctx)
+        _create_venv(self.executor, ctx)
+        _django_steps(self.executor, ctx, timestamp=timestamp)
+        _normalize_worktree_ownership(self.executor, self.spec)
+
+    def _run_healthcheck(self) -> None:
+        try:
+            run_healthcheck(self.executor, self.spec)
+        except HealthcheckError as exc:
+            raise ExecutorError(str(exc)) from exc
+
+    # -- release strategy --------------------------------------------------
+
+    def _deploy_release(self) -> None:
+        spec = self.spec
+        executor = self.executor
+        timestamp = _timestamp()
+        release_dir = spec.releases_dir / timestamp
+        ctx = self._context(release_dir)
+
+        rel.ensure_release_layout(executor, spec)
+        _install_packages(executor, spec)
+        rel.create_release(executor, spec, release_dir)
+        _ensure_git_safe_directory(executor, spec, release_dir)
+        write_env_file(executor, spec, ctx.env_file)
+        rel.link_shared(executor, spec, release_dir, link_env=bool(spec.env))
+        _ensure_python_django_compatibility(executor, ctx)
+        _preflight_django_settings(executor, ctx)
+        _create_venv(executor, ctx)
+        _django_steps(executor, ctx, timestamp=timestamp)
+        executor.run(["chown", "-R", f"{spec.user}:{spec.group}", str(release_dir)], sudo=True)
+        executor.run(["chown", "-R", f"{spec.user}:{spec.group}", str(spec.shared_dir)], sudo=True)
+
+        previous = rel.current_release(executor, spec)
+        render_ctx = self._context()
+        _render_gunicorn(executor, render_ctx)
+        _render_web_server(executor, render_ctx)
+        rel.switch_current(executor, spec, release_dir)
+        self.restart()
+
+        try:
+            run_healthcheck(executor, spec)
+        except HealthcheckError as exc:
+            if previous is not None and previous != release_dir:
+                console.print(f"[red]Healthcheck failed. Rolling back to {previous.name}.[/red]")
+                rel.switch_current(executor, spec, previous)
+                self.restart()
+                raise ExecutorError(
+                    f"Deployment healthcheck failed; rolled back to release {previous.name}. {exc}"
+                ) from exc
+            raise ExecutorError(
+                f"Deployment healthcheck failed and no previous release is available to roll back to. {exc}"
+            ) from exc
+
+        self.update_cert()
+        rel.prune_releases(executor, spec, protect={previous.name} if previous else set())
+        console.print(f"[bold green]Release {timestamp} is live: https://{spec.domain}[/bold green]")
+
+    def rollback(self) -> None:
+        spec = self.spec
+        executor = self.executor
+        if not spec.releases.enabled:
+            raise ExecutorError("Rollback requires `releases.enabled: true` in the project config.")
+        target = rel.previous_release(executor, spec)
+        if target is None:
+            raise ExecutorError("No previous release is available to roll back to.")
+        console.print(f"[yellow]Rolling back to release {target.name}...[/yellow]")
+        rel.switch_current(executor, spec, target)
+        self.restart()
+        try:
+            run_healthcheck(executor, spec)
+        except HealthcheckError as exc:
+            console.print(f"[yellow]Warning: healthcheck still failing after rollback: {exc}[/yellow]")
+        console.print(f"[bold green]Rolled back to release {target.name}.[/bold green]")
+
+    def release_overview(self) -> tuple[list[str], str | None]:
+        names = rel.list_releases(self.executor, self.spec)
+        current = rel.current_release(self.executor, self.spec)
+        return names, current.name if current else None
+
+    # -- shared operations -------------------------------------------------
 
     def deploy(self, *, local_changes: LocalChangePolicy = "keep") -> None:
+        if self.spec.releases.enabled:
+            self._deploy_release()
+            return
+        timestamp = _timestamp()
         _prepare_paths(self.executor, self.spec)
         _install_packages(self.executor, self.spec)
-        self._sync_code(local_changes=local_changes)
+        self._sync_code(local_changes=local_changes, timestamp=timestamp)
         self.update_conf(restart=False)
         self.update_cert()
         self.restart()
+        self._run_healthcheck()
 
     def update_code(self, *, local_changes: LocalChangePolicy = "keep") -> None:
-        self._sync_code(local_changes=local_changes)
+        if self.spec.releases.enabled:
+            self._deploy_release()
+            return
+        timestamp = _timestamp()
+        self._sync_code(local_changes=local_changes, timestamp=timestamp)
         self.restart()
+        self._run_healthcheck()
 
     def update_conf(self, *, restart: bool = True) -> None:
-        gunicorn_changed = _render_gunicorn(self.executor, self.spec)
-        web_changed = _render_web_server(self.executor, self.spec)
+        ctx = self._context()
+        gunicorn_changed = _render_gunicorn(self.executor, ctx)
+        web_changed = _render_web_server(self.executor, ctx)
         if restart:
             if gunicorn_changed or web_changed:
                 self.restart()
+                self._run_healthcheck()
             else:
                 console.print("[green]Configuration already up to date.[/green]")
 
     def update(self, *, local_changes: LocalChangePolicy = "keep") -> None:
-        self._sync_code(local_changes=local_changes)
+        if self.spec.releases.enabled:
+            self._deploy_release()
+            return
+        timestamp = _timestamp()
+        self._sync_code(local_changes=local_changes, timestamp=timestamp)
         self.update_conf(restart=False)
         self.update_cert()
         self.restart()
+        self._run_healthcheck()
 
     def update_cert(self) -> None:
         _provision_ssl(self.executor, self.spec)
         _reload_web_server(self.executor, self.spec)
+
+    def backup_now(self) -> None:
+        spec = self.spec
+        if not spec.database.enabled:
+            raise ExecutorError("No database is configured (set `database.engine`).")
+        ctx = self._context()
+        backup_database(
+            self.executor,
+            spec,
+            backup_dir=ctx.backup_dir,
+            work_dir=ctx.app_dir,
+            timestamp=_timestamp(),
+        )
 
     def restart(self) -> None:
         self.executor.run(["systemctl", "restart", f"{self.spec.project}.service"], sudo=True)
@@ -663,7 +922,8 @@ class DeploymentEngine:
         _provision_ssl(self.executor, self.spec)
 
     def superuser(self) -> None:
-        self.executor.run([str(self.spec.venv_bin / "python"), "manage.py", "createsuperuser"], cwd=self.spec.path)
+        ctx = self._context()
+        self.executor.run([str(ctx.runtime_venv / "bin" / "python"), "manage.py", "createsuperuser"], cwd=ctx.app_dir, as_user=self.spec.user)
 
 
 def build_engine(spec: ProjectSpec, *, dry_run: bool = False) -> DeploymentEngine:

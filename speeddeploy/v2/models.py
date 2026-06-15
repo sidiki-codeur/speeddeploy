@@ -18,6 +18,31 @@ SUPPORTED_WEB_SERVERS = {"apache", "nginx"}
 SUPPORTED_APP_SERVERS = {"gunicorn"}
 SUPPORTED_SSL_PROVIDERS = {"certbot", "none", "disabled"}
 SUPPORTED_PACKAGE_MANAGERS = {"apt", "dnf", "yum", "apk", "pacman"}
+SUPPORTED_DB_ENGINES = {"none", "postgres", "mysql", "sqlite"}
+_DB_ENGINE_ALIASES = {"postgresql": "postgres", "pg": "postgres", "mariadb": "mysql"}
+DEFAULT_EXPECT_STATUS = (200, 204, 301, 302, 308)
+
+
+def _as_bool(value: Any, *, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _as_int(value: Any, field_name: str, *, default: int, minimum: int | None = None, maximum: int | None = None) -> int:
+    if value is None:
+        value = default
+    try:
+        result = int(value)
+    except (TypeError, ValueError) as exc:
+        raise V2ConfigError(f"The `{field_name}` field must be an integer.") from exc
+    if minimum is not None and result < minimum:
+        raise V2ConfigError(f"The `{field_name}` field must be >= {minimum}.")
+    if maximum is not None and result > maximum:
+        raise V2ConfigError(f"The `{field_name}` field must be <= {maximum}.")
+    return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +54,46 @@ class ConnectionSpec:
     port: int = 22
     user: str | None = None
     identity_file: Path | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ReleasesSpec:
+    """Atomic release-based deployment settings."""
+
+    enabled: bool = False
+    keep: int = 5
+
+
+@dataclass(frozen=True, slots=True)
+class HealthcheckSpec:
+    """Post-deployment HTTP healthcheck settings."""
+
+    enabled: bool = True
+    path: str = "/"
+    host: str | None = None
+    port: int | None = None
+    expect_status: tuple[int, ...] = DEFAULT_EXPECT_STATUS
+    timeout: int = 10
+    retries: int = 5
+    delay: int = 3
+
+
+@dataclass(frozen=True, slots=True)
+class DatabaseSpec:
+    """Database backup settings used before running migrations."""
+
+    engine: str = "none"
+    name: str | None = None
+    user: str | None = None
+    password: str | None = None
+    host: str = "localhost"
+    port: int | None = None
+    sqlite_path: str = "db.sqlite3"
+    keep: int = 5
+
+    @property
+    def enabled(self) -> bool:
+        return self.engine.lower() not in {"", "none"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +127,10 @@ class ProjectSpec:
     workers: int
     target: DeploymentTarget = field(default_factory=DeploymentTarget)
     connection: ConnectionSpec = field(default_factory=ConnectionSpec)
+    releases: ReleasesSpec = field(default_factory=ReleasesSpec)
+    healthcheck: HealthcheckSpec = field(default_factory=HealthcheckSpec)
+    database: DatabaseSpec = field(default_factory=DatabaseSpec)
+    env: dict[str, str] = field(default_factory=dict)
     extras: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -75,6 +144,22 @@ class ProjectSpec:
     @property
     def web_service_name(self) -> str:
         return f"{self.project}.{self.target.web_server}"
+
+    @property
+    def releases_dir(self) -> Path:
+        return self.path / "releases"
+
+    @property
+    def shared_dir(self) -> Path:
+        return self.path / "shared"
+
+    @property
+    def current_link(self) -> Path:
+        return self.path / "current"
+
+    @property
+    def socket_path(self) -> Path:
+        return self.path / "gunicorn.sock"
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +181,10 @@ class ProjectTemplate:
     workers: int = 3
     target: DeploymentTarget = field(default_factory=DeploymentTarget)
     connection: ConnectionSpec = field(default_factory=ConnectionSpec)
+    releases: ReleasesSpec = field(default_factory=ReleasesSpec)
+    healthcheck: HealthcheckSpec = field(default_factory=HealthcheckSpec)
+    database: DatabaseSpec = field(default_factory=DatabaseSpec)
+    env: dict[str, str] = field(default_factory=dict)
 
     def to_yaml_data(self) -> dict[str, Any]:
         venv = self.venv or (self.path / "venv")
@@ -130,6 +219,31 @@ class ProjectTemplate:
                 "user": self.connection.user,
                 "identity_file": str(self.connection.identity_file) if self.connection.identity_file else None,
             },
+            "releases": {
+                "enabled": self.releases.enabled,
+                "keep": self.releases.keep,
+            },
+            "healthcheck": {
+                "enabled": self.healthcheck.enabled,
+                "path": self.healthcheck.path,
+                "host": self.healthcheck.host,
+                "port": self.healthcheck.port,
+                "expect_status": list(self.healthcheck.expect_status),
+                "timeout": self.healthcheck.timeout,
+                "retries": self.healthcheck.retries,
+                "delay": self.healthcheck.delay,
+            },
+            "database": {
+                "engine": self.database.engine,
+                "name": self.database.name,
+                "user": self.database.user,
+                "password": self.database.password,
+                "host": self.database.host,
+                "port": self.database.port,
+                "sqlite_path": self.database.sqlite_path,
+                "keep": self.database.keep,
+            },
+            "env": dict(self.env),
         }
 
 
@@ -241,7 +355,61 @@ def load_project_spec(project: str | Path, projects_dir: Path | None = None) -> 
     if connection.backend == "ssh" and not connection.host:
         raise V2ConfigError("The `connection.host` field is required when backend is `ssh`.")
 
-    known = set(required) | {"branch", "target", "connection", "os", "init_system", "web_server", "app_server", "ssl_provider", "package_manager", "backend", "host", "port", "identity_file"}
+    releases_section = _read_section(data, "releases")
+    releases = ReleasesSpec(
+        enabled=_as_bool(releases_section.get("enabled", False)),
+        keep=_as_int(releases_section.get("keep", 5), "releases.keep", default=5, minimum=1),
+    )
+
+    healthcheck_section = _read_section(data, "healthcheck")
+    expect_raw = healthcheck_section.get("expect_status")
+    if isinstance(expect_raw, (list, tuple)):
+        try:
+            expect_status = tuple(int(item) for item in expect_raw) or DEFAULT_EXPECT_STATUS
+        except (TypeError, ValueError) as exc:
+            raise V2ConfigError("The `healthcheck.expect_status` field must contain integers.") from exc
+    elif expect_raw is not None:
+        expect_status = (_as_int(expect_raw, "healthcheck.expect_status", default=200),)
+    else:
+        expect_status = DEFAULT_EXPECT_STATUS
+    healthcheck = HealthcheckSpec(
+        enabled=_as_bool(healthcheck_section.get("enabled", True), default=True),
+        path=str(healthcheck_section.get("path", "/")) or "/",
+        host=str(healthcheck_section["host"]).strip() if healthcheck_section.get("host") else None,
+        port=_as_int(healthcheck_section["port"], "healthcheck.port", default=80, minimum=1, maximum=65535) if healthcheck_section.get("port") else None,
+        expect_status=expect_status,
+        timeout=_as_int(healthcheck_section.get("timeout", 10), "healthcheck.timeout", default=10, minimum=1),
+        retries=_as_int(healthcheck_section.get("retries", 5), "healthcheck.retries", default=5, minimum=1),
+        delay=_as_int(healthcheck_section.get("delay", 3), "healthcheck.delay", default=3, minimum=0),
+    )
+
+    database_section = _read_section(data, "database")
+    db_engine = str(database_section.get("engine", "none")).strip().lower() or "none"
+    db_engine = _DB_ENGINE_ALIASES.get(db_engine, db_engine)
+    if db_engine not in SUPPORTED_DB_ENGINES:
+        raise V2ConfigError(f"Unsupported database engine: {db_engine}")
+    database = DatabaseSpec(
+        engine=db_engine,
+        name=str(database_section["name"]).strip() if database_section.get("name") else None,
+        user=str(database_section["user"]).strip() if database_section.get("user") else None,
+        password=str(database_section["password"]) if database_section.get("password") is not None else None,
+        host=str(database_section.get("host", "localhost")) or "localhost",
+        port=_as_int(database_section["port"], "database.port", default=5432, minimum=1, maximum=65535) if database_section.get("port") else None,
+        sqlite_path=str(database_section.get("sqlite_path", "db.sqlite3")) or "db.sqlite3",
+        keep=_as_int(database_section.get("keep", 5), "database.keep", default=5, minimum=1),
+    )
+    if db_engine in {"postgres", "mysql"} and not database.name:
+        raise V2ConfigError(f"The `database.name` field is required when engine is `{db_engine}`.")
+
+    env_section = data.get("env")
+    if env_section is None:
+        env: dict[str, str] = {}
+    elif isinstance(env_section, dict):
+        env = {str(key): "" if value is None else str(value) for key, value in env_section.items()}
+    else:
+        raise V2ConfigError("The `env` field must be a mapping of KEY: value pairs.")
+
+    known = set(required) | {"branch", "target", "connection", "releases", "healthcheck", "database", "env", "os", "init_system", "web_server", "app_server", "ssl_provider", "package_manager", "backend", "host", "port", "identity_file"}
     extras = {key: value for key, value in data.items() if key not in known}
 
     return ProjectSpec(
@@ -260,5 +428,9 @@ def load_project_spec(project: str | Path, projects_dir: Path | None = None) -> 
         workers=workers,
         target=target,
         connection=connection,
+        releases=releases,
+        healthcheck=healthcheck,
+        database=database,
+        env=env,
         extras=extras,
     )
