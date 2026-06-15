@@ -360,7 +360,8 @@ def _store_requirements_cache(executor: Executor, ctx: DeployContext) -> None:
     requirements_path = _requirements_file(ctx)
     if not executor.path_exists(requirements_path):
         return
-    executor.run(["mkdir", "-p", str(ctx.state_dir)], as_user=ctx.spec.user)
+    executor.run(["mkdir", "-p", str(ctx.state_dir)], sudo=True)
+    executor.run(["chown", "-R", f"{ctx.spec.user}:{ctx.spec.group}", str(ctx.state_dir)], sudo=True)
     executor.write_text(_requirements_cache_file(ctx), f"{_file_sha256(executor, requirements_path, ctx)}\n", sudo=False)
 
 
@@ -380,7 +381,8 @@ def _store_collectstatic_cache(executor: Executor, ctx: DeployContext) -> None:
         current = _project_tree_hash(executor, ctx)
     except ExecutorError:
         return
-    executor.run(["mkdir", "-p", str(ctx.state_dir)], as_user=ctx.spec.user)
+    executor.run(["mkdir", "-p", str(ctx.state_dir)], sudo=True)
+    executor.run(["chown", "-R", f"{ctx.spec.user}:{ctx.spec.group}", str(ctx.state_dir)], sudo=True)
     executor.write_text(_collectstatic_cache_file(ctx), f"{current}\n", sudo=False)
 
 
@@ -744,9 +746,10 @@ class DeploymentEngine:
 
     def fix(self) -> None:
         spec = self.spec
-        targets = [spec.path, spec.venv, spec.static_dir, spec.media_dir]
+        ctx = self._context()
+        targets = [spec.path, spec.venv, spec.static_dir, spec.media_dir, ctx.state_dir]
         if spec.releases.enabled:
-            targets = [spec.path]
+            targets = [spec.path, spec.shared_dir, ctx.state_dir]
         seen: set[Path] = set()
         for target in targets:
             candidate = Path(target)

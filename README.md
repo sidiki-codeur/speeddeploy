@@ -951,6 +951,7 @@ speeddeploy v2 doctor gestiolocative --fix
 ```
 
 Cette commande ajuste les droits des repertoires de travail et recolle le depot Git a l utilisateur du projet.
+Elle remet aussi en etat le cache interne `.speeddeploy/` quand il existe.
 
 ### Dossiers generes par le projet
 
