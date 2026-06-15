@@ -939,7 +939,7 @@ Verifie que l utilisateur cible peut utiliser `sudo` et que `systemd` est bien p
 Si Git affiche `proprietaire douteux detecte` ou `dubious ownership`, SpeedDeploy ajoute automatiquement le depot a `git safe.directory` avant le `pull`.
 Cela arrive quand le dossier du projet est clone sous un compte systeme different de l utilisateur qui execute SpeedDeploy.
 SpeedDeploy V2 lance maintenant les operations Git avec l utilisateur du projet, ce qui evite aussi les erreurs de type `FETCH_HEAD` ou droits insuffisants.
-Si le depot contient des modifications locales, SpeedDeploy V2 les met automatiquement de cote dans un stash avant le `pull`.
+Si le depot contient des modifications locales, SpeedDeploy V2 les met automatiquement de cote dans un stash standard avant le `pull`, sans essayer d y inclure `venv/`, `staticfiles/`, `media/` ou `.speeddeploy/`.
 Si tu veux supprimer les modifications locales au lieu de les conserver, utilise `--discard-local-changes`.
 
 ### Reparation automatique
@@ -962,7 +962,7 @@ SpeedDeploy ignore maintenant les dossiers generes les plus courants pendant les
 - `media/`
 - `.speeddeploy/`
 
-Cela evite que le `stash`, le `clean` ou le `pull` se bloquent sur des fichiers Django generes par le serveur.
+Cela evite que le `stash`, le `clean` ou le `pull` se bloquent sur des fichiers Django generes par le serveur. Le `stash` standard ne cherche plus a les embarquer.
 Garde ces dossiers hors de la gestion Git du projet applicatif si possible.
 
 ### Django 6.x avec Python 3.11
