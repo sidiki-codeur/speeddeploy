@@ -128,13 +128,13 @@ cd /opt/speeddeploy
 ### 2. Cloner SpeedDeploy
 
 ```bash
-git clone https://github.com/TON_COMPTE/speeddeploy.git .
+git clone https://github.com/sidiki-codeur/speeddeploy.git .
 ```
 
 Si tu preferes garder le depot dans un sous-dossier :
 
 ```bash
-git clone https://github.com/TON_COMPTE/speeddeploy.git
+git clone https://github.com/sidiki-codeur/speeddeploy.git
 cd speeddeploy
 ```
 
@@ -463,7 +463,7 @@ Par defaut, `speeddeploy v2 update` conserve les changements locaux en les metta
 ```yaml
 project: gestiolocative
 domain: locative.emanager.cloud
-repo: https://github.com/TON_COMPTE/gestiolocative.git
+repo: https://github.com/sidiki-codeur/gestiolocative.git
 branch: main
 path: /srv/gestiolocative
 user: django
@@ -490,7 +490,7 @@ connection:
 ```yaml
 project: gestiolocative
 domain: locative.emanager.cloud
-repo: https://github.com/TON_COMPTE/gestiolocative.git
+repo: https://github.com/sidiki-codeur/gestiolocative.git
 branch: main
 path: /srv/gestiolocative
 user: django
@@ -761,7 +761,7 @@ speeddeploy helpers gestiolocative
 
 ```bash
 speeddeploy config new
-speeddeploy config new gestiolocative --domain locative.emanager.cloud --repo https://github.com/TON_COMPTE/gestiolocative.git
+speeddeploy config new gestiolocative --domain locative.emanager.cloud --repo https://github.com/sidiki-codeur/gestiolocative.git
 
 speeddeploy v2 config new
 speeddeploy v2 config new gestiolocative --branch main --backend ssh --host 203.0.113.10 --connection-user root
