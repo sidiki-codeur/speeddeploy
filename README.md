@@ -996,6 +996,24 @@ Lance la commande sur le serveur Linux cible, ou utilise le backend SSH.
 
 Verifie que l utilisateur cible peut utiliser `sudo` et que `systemd` est bien present sur le serveur.
 
+### Service Gunicorn en `status=203/EXEC`
+
+Ce statut signifie que systemd n arrive pas a executer la commande `ExecStart`.
+SpeedDeploy lance maintenant Gunicorn avec:
+
+```text
+venv/bin/python -m gunicorn
+```
+
+et installe automatiquement `gunicorn` dans le virtualenv s il manque apres `pip install -r requirements.txt`.
+Apres mise a jour de SpeedDeploy, relance:
+
+```bash
+speeddeploy v2 update-code <projet>
+speeddeploy v2 update-conf <projet>
+speeddeploy v2 restart <projet>
+```
+
 ### Propriete Git douteuse
 
 Si Git affiche `proprietaire douteux detecte` ou `dubious ownership`, SpeedDeploy ajoute automatiquement le depot a `git safe.directory` avant le `pull`.

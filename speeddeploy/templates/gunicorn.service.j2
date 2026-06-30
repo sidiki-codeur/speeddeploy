@@ -9,7 +9,7 @@ WorkingDirectory={{ app_dir }}
 Type=simple
 Environment=PYTHONUNBUFFERED=1
 {% if env_file %}EnvironmentFile=-{{ env_file }}
-{% endif %}ExecStart={{ venv }}/bin/gunicorn --workers {{ workers }} --bind unix:{{ socket }} {{ wsgi }}
+{% endif %}ExecStart={{ venv }}/bin/python -m gunicorn --workers {{ workers }} --bind unix:{{ socket }} {{ wsgi }}
 UMask=0007
 Restart=on-failure
 RestartSec=5

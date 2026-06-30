@@ -702,6 +702,7 @@ def _create_venv(executor: Executor, ctx: DeployContext) -> None:
         executor.run([spec.python, "-m", "venv", str(ctx.build_venv)], cwd=ctx.work_dir, as_user=spec.user)
         executor.run([str(venv_python), "-m", "pip", "install", "--upgrade", "pip"], cwd=ctx.work_dir, as_user=spec.user)
         executor.run([str(ctx.build_venv_bin / "pip"), "install", "-r", "requirements.txt"], cwd=ctx.work_dir, as_user=spec.user)
+        _ensure_app_server_dependency(executor, ctx)
         return
 
     requirements_path = _requirements_file(ctx)
@@ -710,6 +711,7 @@ def _create_venv(executor: Executor, ctx: DeployContext) -> None:
 
     if ctx.use_cache and executor.path_exists(venv_python) and _requirements_cache_matches(executor, ctx):
         console.print("[green]Virtualenv already up to date. Skipping dependency install.[/green]")
+        _ensure_app_server_dependency(executor, ctx)
         return
 
     if executor.path_exists(ctx.build_venv):
@@ -719,8 +721,24 @@ def _create_venv(executor: Executor, ctx: DeployContext) -> None:
     executor.run([spec.python, "-m", "venv", str(ctx.build_venv)], cwd=ctx.work_dir, as_user=spec.user)
     executor.run([str(venv_python), "-m", "pip", "install", "--upgrade", "pip"], cwd=ctx.work_dir, as_user=spec.user)
     executor.run([str(ctx.build_venv_bin / "pip"), "install", "-r", "requirements.txt"], cwd=ctx.work_dir, as_user=spec.user)
+    _ensure_app_server_dependency(executor, ctx)
     if ctx.use_cache:
         _store_requirements_cache(executor, ctx)
+
+
+def _ensure_app_server_dependency(executor: Executor, ctx: DeployContext) -> None:
+    spec = ctx.spec
+    if spec.target.app_server.lower() != "gunicorn":
+        return
+    venv_python = ctx.build_venv_bin / "python"
+    if getattr(executor, "dry_run", False):
+        executor.run([str(venv_python), "-c", "import gunicorn"], cwd=ctx.work_dir, as_user=spec.user)
+        return
+    try:
+        executor.capture([str(venv_python), "-c", "import gunicorn"], cwd=ctx.work_dir, as_user=spec.user)
+    except ExecutorError:
+        console.print("[yellow]Gunicorn is missing from the virtualenv. Installing it.[/yellow]")
+        executor.run([str(ctx.build_venv_bin / "pip"), "install", "gunicorn"], cwd=ctx.work_dir, as_user=spec.user)
 
 
 def _django_steps(executor: Executor, ctx: DeployContext, *, timestamp: str) -> None:
@@ -1411,7 +1429,10 @@ class DeploymentEngine:
         _reload_web_server(self.executor, self.spec)
 
     def status(self) -> None:
-        self.executor.run(["systemctl", "status", f"{self.spec.project}.service", "--no-pager"], sudo=True)
+        service = shlex.quote(f"{self.spec.project}.service")
+        output = self.executor.capture(["bash", "-lc", f"systemctl status {service} --no-pager || true"], sudo=True)
+        if output:
+            console.print(output)
 
     def logs(self) -> None:
         self.executor.run(["journalctl", "-u", f"{self.spec.project}.service", "-n", "100", "--no-pager"], sudo=True)
