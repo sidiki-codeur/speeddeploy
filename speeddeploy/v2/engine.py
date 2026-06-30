@@ -27,10 +27,12 @@ from jinja2 import Environment, PackageLoader
 from rich.console import Console
 
 from .backup import backup_database
+from ..certbot import build_certbot_command
 from .envfile import write_env_file
 from .executor import Executor, ExecutorError, LocalExecutor, SSHExecutor
 from .health import HealthcheckError, run_healthcheck
 from .models import ProjectSpec
+from .state import DeploymentState, read_state, write_state
 from . import releases as rel
 
 console = Console()
@@ -48,6 +50,7 @@ _DJANGO_REQUIREMENT_RE = re.compile(
 )
 
 LocalChangePolicy = Literal["keep", "discard"]
+AuditSeverity = Literal["ok", "warn", "error"]
 _IGNORED_WORKTREE_PREFIXES = ("venv/", "staticfiles/", "media/", ".speeddeploy/")
 _STATE_DIR_NAME = ".speeddeploy"
 _REQ_HASH_FILE = "requirements.hash"
@@ -86,6 +89,15 @@ class DeployContext:
     @property
     def build_venv_bin(self) -> Path:
         return self.build_venv / "bin"
+
+
+@dataclass(frozen=True, slots=True)
+class AuditFinding:
+    """One audit result entry."""
+
+    severity: AuditSeverity
+    check: str
+    detail: str
 
 
 def _render_template(template_name: str, ctx: DeployContext) -> str:
@@ -174,8 +186,13 @@ find . \
 def build_plan(spec: ProjectSpec) -> list[str]:
     steps = [
         f"Select backend: {spec.connection.backend}",
-        f"Install system packages via {spec.target.package_manager}",
     ]
+    if spec.system_packages.install:
+        steps.append(f"Install system packages via {spec.target.package_manager}")
+    else:
+        steps.append("Skip system package installation")
+    if spec.system_user.create:
+        steps.append(f"Ensure system user {spec.user} exists")
     if spec.releases.enabled:
         steps.append(f"Prepare release layout under {spec.path}")
         steps.append(f"Create new release from {spec.repo} (branch {spec.branch})")
@@ -278,6 +295,9 @@ def _system_packages(spec: ProjectSpec) -> list[str]:
 
 
 def _install_packages(executor: Executor, spec: ProjectSpec) -> None:
+    if not spec.system_packages.install:
+        console.print("[green]System package installation skipped by configuration.[/green]")
+        return
     packages = _system_packages(spec)
     manager = spec.target.package_manager.lower()
     if manager == "apt":
@@ -309,6 +329,55 @@ def _normalize_worktree_ownership(executor: Executor, spec: ProjectSpec) -> None
     if not executor.path_exists(spec.path):
         return
     executor.run(["chown", "-R", f"{spec.user}:{spec.group}", str(spec.path)], sudo=True)
+
+
+def _system_user_exists(executor: Executor, user: str) -> bool:
+    try:
+        executor.capture(["id", "-u", user])
+    except ExecutorError:
+        return False
+    return True
+
+
+def _system_group_exists(executor: Executor, group: str) -> bool:
+    try:
+        executor.capture(["getent", "group", group])
+    except ExecutorError:
+        return False
+    return True
+
+
+def _ensure_system_user(executor: Executor, spec: ProjectSpec) -> None:
+    if not spec.system_user.create:
+        return
+    if getattr(executor, "dry_run", False):
+        console.print(f"[yellow][dry-run] Would ensure system user {spec.user} exists[/yellow]")
+        return
+
+    if _system_user_exists(executor, spec.user):
+        return
+
+    if not _system_group_exists(executor, spec.group):
+        executor.run(["groupadd", "--system", spec.group], sudo=True)
+
+    home_dir = spec.system_user.home or spec.path
+    executor.run(["mkdir", "-p", str(home_dir)], sudo=True)
+    executor.run(
+        [
+            "useradd",
+            "--system",
+            "--shell",
+            spec.system_user.shell,
+            "--home-dir",
+            str(home_dir),
+            "--gid",
+            spec.group,
+            "--no-create-home",
+            spec.user,
+        ],
+        sudo=True,
+    )
+    console.print(f"[green]Created system user {spec.user}.[/green]")
 
 
 def _ensure_git_safe_directory(executor: Executor, spec: ProjectSpec, work_dir: Path) -> None:
@@ -455,6 +524,36 @@ def _parse_django_requirement(requirements_path: Path) -> tuple[str, tuple[int, 
         version = tuple(int(part) for part in match.group(2).split("."))
         return operator, version
     return None
+
+
+def _git_revision(executor: Executor, path: Path, *, as_user: str | None) -> str | None:
+    try:
+        revision = executor.capture(["git", "rev-parse", "--short", "HEAD"], cwd=path, as_user=as_user)
+    except ExecutorError:
+        return None
+    return revision.strip() or None
+
+
+def _write_deployment_state(
+    executor: Executor,
+    ctx: DeployContext,
+    *,
+    status: str,
+    current_release: str | None = None,
+    previous_release: str | None = None,
+    source_dir: Path | None = None,
+) -> None:
+    state = DeploymentState(
+        project=ctx.spec.project,
+        branch=ctx.spec.branch,
+        strategy="releases" if ctx.spec.releases.enabled else "in-place",
+        status=status,
+        last_deploy_at=_timestamp(),
+        current_release=current_release,
+        previous_release=previous_release,
+        last_commit=_git_revision(executor, source_dir or ctx.app_dir, as_user=ctx.spec.user),
+    )
+    write_state(executor, ctx.state_dir, state)
 
 
 def _ensure_python_django_compatibility(executor: Executor, ctx: DeployContext) -> None:
@@ -628,15 +727,19 @@ def _render_web_server(executor: Executor, ctx: DeployContext) -> bool:
 
 
 def _provision_ssl(executor: Executor, spec: ProjectSpec) -> None:
-    if spec.target.ssl_provider in {"", "none", "disabled"}:
+    if spec.target.ssl_provider in {"", "none", "disabled"} or not spec.ssl.enabled:
         return
-    if spec.target.web_server == "apache":
-        executor.run(["certbot", "--apache", "-d", spec.domain], sudo=True)
-        return
-    if spec.target.web_server == "nginx":
-        executor.run(["certbot", "--nginx", "-d", spec.domain], sudo=True)
-        return
-    executor.run(["certbot", "--standalone", "-d", spec.domain], sudo=True)
+    executor.run(
+        build_certbot_command(
+            web_server=spec.target.web_server,
+            domain=spec.domain,
+            email=spec.ssl.email,
+            redirect=spec.ssl.redirect,
+            staging=spec.ssl.staging,
+            agree_tos=spec.ssl.agree_tos,
+        ),
+        sudo=True,
+    )
 
 
 def _reload_web_server(executor: Executor, spec: ProjectSpec) -> None:
@@ -646,6 +749,10 @@ def _reload_web_server(executor: Executor, spec: ProjectSpec) -> None:
     if spec.target.web_server == "nginx":
         executor.run(["systemctl", "reload", "nginx"], sudo=True)
         return
+
+
+def _make_finding(severity: AuditSeverity, check: str, detail: str) -> AuditFinding:
+    return AuditFinding(severity=severity, check=check, detail=detail)
 
 
 @dataclass(slots=True)
@@ -702,6 +809,27 @@ class DeploymentEngine:
             use_cache=True,
         )
 
+    def _update_state(
+        self,
+        ctx: DeployContext,
+        *,
+        status: str,
+        current_release: str | None = None,
+        previous_release: str | None = None,
+        source_dir: Path | None = None,
+    ) -> None:
+        _write_deployment_state(
+            self.executor,
+            ctx,
+            status=status,
+            current_release=current_release,
+            previous_release=previous_release,
+            source_dir=source_dir,
+        )
+
+    def deployment_context(self) -> DeployContext:
+        return self._context()
+
     def plan(self) -> list[str]:
         return build_plan(self.spec)
 
@@ -721,6 +849,11 @@ class DeploymentEngine:
         console.print(f"[bold]Database backups:[/bold] {spec.database.engine}")
         console.print(f"[bold]Healthcheck:[/bold] {'enabled' if spec.healthcheck.enabled else 'disabled'}")
         console.print(f"[bold]Env vars:[/bold] {len(spec.env)}")
+        console.print(f"[bold]System packages:[/bold] {'install' if spec.system_packages.install else 'skip'}")
+        console.print(
+            f"[bold]System user:[/bold] {'create' if spec.system_user.create else 'reuse'} "
+            f"({spec.system_user.shell})"
+        )
         if spec.releases.enabled:
             names, current = self.release_overview()
             console.print(f"[bold]Releases:[/bold] {len(names)} (keep {spec.releases.keep})")
@@ -737,6 +870,197 @@ class DeploymentEngine:
             self.fix()
         for idx, step in enumerate(self.plan(), start=1):
             console.print(f"{idx}. {step}")
+
+    def audit(self) -> list[AuditFinding]:
+        spec = self.spec
+        findings: list[AuditFinding] = []
+        ctx = self._context()
+        app_root: Path | None = ctx.app_dir
+
+        def add(severity: AuditSeverity, check: str, detail: str) -> None:
+            findings.append(_make_finding(severity, check, detail))
+
+        add("ok", "Project", spec.project)
+        add("ok", "Backend", spec.connection.backend)
+        add("ok", "Web server", spec.target.web_server)
+        add("ok", "App server", spec.target.app_server)
+        add("ok", "Executor", self.executor.kind())
+
+        if spec.connection.backend == "ssh":
+            try:
+                self.executor.capture(["true"])
+            except ExecutorError as exc:
+                add("error", "SSH connectivity", str(exc))
+            else:
+                add("ok", "SSH connectivity", f"{spec.connection.host or 'remote host'} reachable")
+
+        add(
+            "ok" if self.executor.path_exists(spec.path) else "warn",
+            "Deployment root",
+            str(spec.path) if self.executor.path_exists(spec.path) else f"{spec.path} does not exist yet",
+        )
+
+        if spec.releases.enabled:
+            add(
+                "ok" if self.executor.path_exists(spec.releases_dir) else "warn",
+                "Releases dir",
+                str(spec.releases_dir) if self.executor.path_exists(spec.releases_dir) else "Release tree not created yet",
+            )
+            if self.executor.path_exists(spec.current_link):
+                add("ok", "Active release", str(spec.current_link))
+            else:
+                add("warn", "Active release", "No current release linked yet")
+                app_root = None
+        else:
+            if not self.executor.path_exists(spec.path):
+                app_root = None
+
+        try:
+            self.executor.capture(["id", "-u", spec.user])
+        except ExecutorError as exc:
+            severity = "warn" if spec.system_user.create else "error"
+            detail = f"{spec.user} unavailable: {exc}"
+            if spec.system_user.create:
+                detail += " (will be created on deploy)"
+            add(severity, "System user", detail)
+        else:
+            add("ok", "System user", spec.user)
+
+        try:
+            self.executor.capture(["getent", "group", spec.group])
+        except ExecutorError as exc:
+            severity = "warn" if spec.system_user.create else "error"
+            detail = f"{spec.group} unavailable: {exc}"
+            if spec.system_user.create:
+                detail += " (will be created on deploy)"
+            add(severity, "System group", detail)
+        else:
+            add("ok", "System group", spec.group)
+
+        try:
+            python_version = self.executor.capture([spec.python, "--version"])
+        except ExecutorError as exc:
+            add("error", "Python runtime", f"{spec.python} unavailable: {exc}")
+        else:
+            add("ok", "Python runtime", python_version or spec.python)
+
+        try:
+            pip_version = self.executor.capture([spec.python, "-m", "pip", "--version"])
+        except ExecutorError as exc:
+            add("error", "pip", f"{spec.python} -m pip unavailable: {exc}")
+        else:
+            add("ok", "pip", pip_version or f"{spec.python} -m pip")
+
+        try:
+            self.executor.capture([spec.python, "-m", "venv", "--help"])
+        except ExecutorError as exc:
+            add("error", "venv module", f"{spec.python} -m venv unavailable: {exc}")
+        else:
+            add("ok", "venv module", f"{spec.python} -m venv available")
+
+        if app_root is not None:
+            manage_py = app_root / "manage.py"
+            requirements = app_root / "requirements.txt"
+            add(
+                "ok" if self.executor.path_exists(manage_py) else "warn",
+                "manage.py",
+                str(manage_py) if self.executor.path_exists(manage_py) else "manage.py not found in the active tree",
+            )
+            add(
+                "ok" if self.executor.path_exists(requirements) else "warn",
+                "requirements.txt",
+                str(requirements) if self.executor.path_exists(requirements) else "requirements.txt not found in the active tree",
+            )
+            static_root_hit = _search_project_file(self.executor, ctx, "STATIC_ROOT")
+            if static_root_hit:
+                add("ok", "STATIC_ROOT", static_root_hit.splitlines()[0])
+            else:
+                add("error", "STATIC_ROOT", "STATIC_ROOT is not defined in the Django settings")
+
+            auto_field_hit = _search_project_file(self.executor, ctx, "DEFAULT_AUTO_FIELD")
+            if auto_field_hit:
+                add("ok", "DEFAULT_AUTO_FIELD", auto_field_hit.splitlines()[0])
+            else:
+                add("warn", "DEFAULT_AUTO_FIELD", "DEFAULT_AUTO_FIELD not found; migrations may warn")
+        else:
+            add("warn", "Application tree", "No active application tree is available yet")
+
+        try:
+            systemd_version = self.executor.capture(["systemctl", "--version"])
+        except ExecutorError as exc:
+            add("error", "systemd", f"systemctl unavailable: {exc}")
+        else:
+            add("ok", "systemd", systemd_version.splitlines()[0] if systemd_version else "systemd available")
+
+        if spec.target.web_server == "apache":
+            try:
+                apache_version = self.executor.capture(["apache2ctl", "-v"])
+            except ExecutorError as exc:
+                add("error", "Apache", f"apache2ctl unavailable: {exc}")
+            else:
+                add("ok", "Apache", apache_version.splitlines()[0] if apache_version else "apache2ctl available")
+        elif spec.target.web_server == "nginx":
+            try:
+                nginx_version = self.executor.capture(["nginx", "-v"])
+            except ExecutorError as exc:
+                add("error", "Nginx", f"nginx unavailable: {exc}")
+            else:
+                add("ok", "Nginx", nginx_version.splitlines()[0] if nginx_version else "nginx available")
+
+        if spec.target.ssl_provider == "certbot":
+            try:
+                certbot_version = self.executor.capture(["certbot", "--version"])
+            except ExecutorError as exc:
+                add("error", "Certbot", f"certbot unavailable: {exc}")
+            else:
+                add("ok", "Certbot", certbot_version.splitlines()[0] if certbot_version else "certbot available")
+
+        try:
+            dns_output = self.executor.capture(["getent", "ahostsv4", spec.domain])
+        except ExecutorError as exc:
+            add("error", "DNS", f"Unable to resolve {spec.domain}: {exc}")
+        else:
+            if dns_output.strip():
+                add("ok", "DNS", f"{spec.domain} resolves")
+            else:
+                add("error", "DNS", f"{spec.domain} does not resolve")
+
+        try:
+            socket_output = self.executor.capture(["ss", "-ltn"])
+        except ExecutorError as exc:
+            add("warn", "Listening ports", f"Could not inspect ports: {exc}")
+        else:
+            listening = socket_output.replace(" ", "")
+            has_80 = ":80" in listening
+            has_443 = ":443" in listening
+            if has_80 or has_443:
+                ports = ", ".join(port for port, active in (("80", has_80), ("443", has_443)) if active)
+                add("ok", "Listening ports", f"Detected {ports}")
+            else:
+                add("warn", "Listening ports", "Ports 80/443 not detected")
+
+        if spec.releases.enabled:
+            try:
+                branch_check = self.executor.capture(["git", "ls-remote", "--heads", spec.repo, spec.branch], as_user=spec.user)
+            except ExecutorError as exc:
+                add("error", "Git repository", f"Unable to query {spec.repo}: {exc}")
+            else:
+                if branch_check.strip():
+                    add("ok", "Git branch", f"{spec.branch} exists on remote")
+                else:
+                    add("error", "Git branch", f"{spec.branch} not found on {spec.repo}")
+        else:
+            try:
+                branch_check = self.executor.capture(["git", "ls-remote", "--heads", spec.repo, spec.branch], as_user=spec.user)
+            except ExecutorError as exc:
+                add("error", "Git repository", f"Unable to query {spec.repo}: {exc}")
+            else:
+                if branch_check.strip():
+                    add("ok", "Git branch", f"{spec.branch} exists on remote")
+                else:
+                    add("error", "Git branch", f"{spec.branch} not found on {spec.repo}")
+
+        return findings
 
     def fix(self) -> None:
         spec = self.spec
@@ -782,6 +1106,7 @@ class DeploymentEngine:
         release_dir = spec.releases_dir / timestamp
         ctx = self._context(release_dir)
 
+        _ensure_system_user(executor, spec)
         rel.ensure_release_layout(executor, spec)
         _install_packages(executor, spec)
         rel.create_release(executor, spec, release_dir)
@@ -809,25 +1134,69 @@ class DeploymentEngine:
                 console.print(f"[red]Healthcheck failed. Rolling back to {previous.name}.[/red]")
                 rel.switch_current(executor, spec, previous)
                 self.restart()
+                try:
+                    self._update_state(
+                        render_ctx,
+                        status="rolled_back",
+                        current_release=previous.name,
+                        previous_release=release_dir.name,
+                        source_dir=render_ctx.app_dir,
+                    )
+                except Exception:
+                    pass
                 raise ExecutorError(
                     f"Deployment healthcheck failed; rolled back to release {previous.name}. {exc}"
                 ) from exc
+            try:
+                self._update_state(
+                    render_ctx,
+                    status="failed",
+                    current_release=release_dir.name,
+                    previous_release=previous.name if previous else None,
+                    source_dir=render_ctx.app_dir,
+                )
+            except Exception:
+                pass
             raise ExecutorError(
                 f"Deployment healthcheck failed and no previous release is available to roll back to. {exc}"
             ) from exc
 
         self.update_cert()
         rel.prune_releases(executor, spec, protect={previous.name} if previous else set())
+        self._update_state(
+            render_ctx,
+            status="success",
+            current_release=release_dir.name,
+            previous_release=previous.name if previous else None,
+            source_dir=render_ctx.app_dir,
+        )
         console.print(f"[bold green]Release {timestamp} is live: https://{spec.domain}[/bold green]")
 
-    def rollback(self) -> None:
+    def rollback(self, target_release: str | None = None) -> None:
         spec = self.spec
         executor = self.executor
         if not spec.releases.enabled:
             raise ExecutorError("Rollback requires `releases.enabled: true` in the project config.")
-        target = rel.previous_release(executor, spec)
-        if target is None:
-            raise ExecutorError("No previous release is available to roll back to.")
+        ctx = self._context()
+        if target_release:
+            target = spec.releases_dir / target_release
+            if not executor.path_exists(target):
+                raise ExecutorError(f"Release not found: {target_release}")
+        else:
+            target = rel.previous_release(executor, spec)
+            if target is None:
+                raise ExecutorError("No previous release is available to roll back to.")
+        current = rel.current_release(executor, spec)
+        if current is not None and current.name == target.name:
+            console.print(f"[yellow]Release {target.name} is already active.[/yellow]")
+            self._update_state(
+                ctx,
+                status="success",
+                current_release=target.name,
+                previous_release=None,
+                source_dir=ctx.app_dir,
+            )
+            return
         console.print(f"[yellow]Rolling back to release {target.name}...[/yellow]")
         rel.switch_current(executor, spec, target)
         self.restart()
@@ -835,6 +1204,13 @@ class DeploymentEngine:
             run_healthcheck(executor, spec)
         except HealthcheckError as exc:
             console.print(f"[yellow]Warning: healthcheck still failing after rollback: {exc}[/yellow]")
+        self._update_state(
+            ctx,
+            status="success",
+            current_release=target.name,
+            previous_release=current.name if current else None,
+            source_dir=ctx.app_dir,
+        )
         console.print(f"[bold green]Rolled back to release {target.name}.[/bold green]")
 
     def release_overview(self) -> tuple[list[str], str | None]:
@@ -842,29 +1218,108 @@ class DeploymentEngine:
         current = rel.current_release(self.executor, self.spec)
         return names, current.name if current else None
 
+    def deployment_state(self) -> DeploymentState | None:
+        return read_state(self.executor, self._context().state_dir)
+
+    def diagnose(self) -> list[AuditFinding]:
+        spec = self.spec
+        ctx = self._context()
+        findings: list[AuditFinding] = []
+
+        def add(severity: AuditSeverity, check: str, detail: str) -> None:
+            findings.append(_make_finding(severity, check, detail))
+
+        state = self.deployment_state()
+        if state is None:
+            add("warn", "Deployment state", "No persisted state.json found yet")
+        else:
+            add(
+                "ok",
+                "Deployment state",
+                f"{state.status} at {state.last_deploy_at} ({state.strategy})",
+            )
+            if state.last_commit:
+                add("ok", "Last commit", state.last_commit)
+
+        names, current = self.release_overview()
+        if spec.releases.enabled:
+            add("ok" if names else "warn", "Releases", f"{len(names)} release(s) available")
+            add("ok" if current else "warn", "Current release", current or "none")
+        else:
+            add("warn", "Releases", "Atomic releases are disabled for this project")
+
+        try:
+            service_active = self.executor.capture(["systemctl", "is-active", f"{spec.project}.service"], sudo=True)
+        except ExecutorError as exc:
+            add("error", "Service active", f"systemctl is-active unavailable: {exc}")
+        else:
+            active_value = service_active.strip() or "unknown"
+            severity = "ok" if active_value == "active" else "warn"
+            add(severity, "Service active", active_value)
+
+        try:
+            run_healthcheck(self.executor, spec)
+        except HealthcheckError as exc:
+            add("warn", "Healthcheck", str(exc))
+        else:
+            add("ok", "Healthcheck", "Passed")
+
+        try:
+            logs = self.executor.capture(["journalctl", "-u", f"{spec.project}.service", "-n", "20", "--no-pager"], sudo=True)
+        except ExecutorError as exc:
+            add("warn", "Recent logs", f"Unable to read logs: {exc}")
+        else:
+            add("ok", "Recent logs", "Captured latest journal entries")
+            if logs.strip():
+                console.print()
+                console.print(f"[bold]Recent logs for {spec.project}[/bold]")
+                console.print(logs)
+
+        return findings
+
     # -- shared operations -------------------------------------------------
 
     def deploy(self, *, local_changes: LocalChangePolicy = "keep") -> None:
         if self.spec.releases.enabled:
             self._deploy_release()
             return
+        ctx = self._context()
         timestamp = _timestamp()
-        _prepare_paths(self.executor, self.spec)
-        _install_packages(self.executor, self.spec)
-        self._sync_code(local_changes=local_changes, timestamp=timestamp)
-        self.update_conf(restart=False)
-        self.update_cert()
-        self.restart()
-        self._run_healthcheck()
+        try:
+            _ensure_system_user(self.executor, self.spec)
+            _prepare_paths(self.executor, self.spec)
+            _install_packages(self.executor, self.spec)
+            self._sync_code(local_changes=local_changes, timestamp=timestamp)
+            self.update_conf(restart=False)
+            self.update_cert()
+            self.restart()
+            self._run_healthcheck()
+        except Exception:
+            try:
+                self._update_state(ctx, status="failed", source_dir=ctx.app_dir)
+            except Exception:
+                pass
+            raise
+        self._update_state(ctx, status="success", source_dir=ctx.app_dir)
 
     def update_code(self, *, local_changes: LocalChangePolicy = "keep") -> None:
         if self.spec.releases.enabled:
             self._deploy_release()
             return
+        ctx = self._context()
         timestamp = _timestamp()
-        self._sync_code(local_changes=local_changes, timestamp=timestamp)
-        self.restart()
-        self._run_healthcheck()
+        try:
+            _ensure_system_user(self.executor, self.spec)
+            self._sync_code(local_changes=local_changes, timestamp=timestamp)
+            self.restart()
+            self._run_healthcheck()
+        except Exception:
+            try:
+                self._update_state(ctx, status="failed", source_dir=ctx.app_dir)
+            except Exception:
+                pass
+            raise
+        self._update_state(ctx, status="success", source_dir=ctx.app_dir)
 
     def update_conf(self, *, restart: bool = True) -> None:
         ctx = self._context()
@@ -881,12 +1336,22 @@ class DeploymentEngine:
         if self.spec.releases.enabled:
             self._deploy_release()
             return
+        ctx = self._context()
         timestamp = _timestamp()
-        self._sync_code(local_changes=local_changes, timestamp=timestamp)
-        self.update_conf(restart=False)
-        self.update_cert()
-        self.restart()
-        self._run_healthcheck()
+        try:
+            _ensure_system_user(self.executor, self.spec)
+            self._sync_code(local_changes=local_changes, timestamp=timestamp)
+            self.update_conf(restart=False)
+            self.update_cert()
+            self.restart()
+            self._run_healthcheck()
+        except Exception:
+            try:
+                self._update_state(ctx, status="failed", source_dir=ctx.app_dir)
+            except Exception:
+                pass
+            raise
+        self._update_state(ctx, status="success", source_dir=ctx.app_dir)
 
     def update_cert(self) -> None:
         _provision_ssl(self.executor, self.spec)

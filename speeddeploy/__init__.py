@@ -5,7 +5,7 @@ from .deployer import build_deployment_plan, clone_or_update, full_deploy, init_
 from .runner import CommandError, is_dry_run, run, set_dry_run
 from .system import RuntimeInfo, detect_runtime
 
-__version__ = "0.1.0"
+__version__ = "0.5.0"
 
 __all__ = [
     "__version__",

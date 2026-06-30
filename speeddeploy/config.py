@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import yaml
+
+from .paths import as_posix_text
 
 
 class ConfigError(ValueError):
@@ -52,14 +54,14 @@ class ConfigTemplate:
             "project": self.project,
             "domain": self.domain,
             "repo": self.repo,
-            "path": str(self.path),
+            "path": as_posix_text(self.path),
             "user": self.user,
             "group": self.group,
             "wsgi": self.wsgi,
             "python": self.python,
-            "venv": str(venv),
-            "static_dir": str(static_dir),
-            "media_dir": str(media_dir),
+            "venv": as_posix_text(venv),
+            "static_dir": as_posix_text(static_dir),
+            "media_dir": as_posix_text(media_dir),
             "workers": self.workers,
             "target": {
                 "os": self.target.os,
@@ -197,7 +199,6 @@ def load_config(project: str | Path, projects_dir: Path | None = None) -> Projec
 
     known_keys = set(REQUIRED_FIELDS) | {
         "project_root",
-        "ssl",
         "manage_py",
         "target",
         "os",
@@ -211,8 +212,13 @@ def load_config(project: str | Path, projects_dir: Path | None = None) -> Projec
     base_dir = config_path.parent
 
     def _resolve_path(value: Any) -> Path:
-        candidate = Path(str(value)).expanduser()
-        return candidate if candidate.is_absolute() else (base_dir / candidate).resolve()
+        raw = str(value).strip()
+        if not raw:
+            raise ConfigError("Path values cannot be empty.")
+        normalized = raw.replace("\\", "/")
+        if normalized.startswith("/"):
+            return PurePosixPath(normalized)
+        return PurePosixPath(as_posix_text(base_dir)) / PurePosixPath(normalized)
 
     def _require_text(key: str) -> str:
         raw = data[key]

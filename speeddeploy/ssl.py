@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from rich.console import Console
 
+from .certbot import build_certbot_command
 from .config import ProjectConfig
 from .runner import is_dry_run, run
 
@@ -25,9 +28,28 @@ def _package_command(manager: str) -> tuple[list[str], list[str] | None]:
     raise ValueError(f"Unsupported package manager: {manager}")
 
 
+def _as_bool(value: object, *, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _ssl_options(config: ProjectConfig) -> Mapping[str, object]:
+    options = config.extras.get("ssl")
+    return options if isinstance(options, Mapping) else {}
+
+
 def install_ssl(config: ProjectConfig) -> None:
     """Install certbot and provision a certificate for the configured domain."""
     if config.target.ssl_provider in {"", "none", "disabled"}:
+        if not is_dry_run():
+            console.print("[green]SSL provisioning skipped.[/green]")
+        return
+
+    ssl = _ssl_options(config)
+    if not _as_bool(ssl.get("enabled", True), default=True):
         if not is_dry_run():
             console.print("[green]SSL provisioning skipped.[/green]")
         return
@@ -43,11 +65,17 @@ def install_ssl(config: ProjectConfig) -> None:
     if update_cmd is not None:
         run(update_cmd, sudo=True)
     run([*installer, *packages], sudo=True)
-
-    if config.target.web_server == "nginx":
-        run(["certbot", "--nginx", "-d", config.domain], sudo=True)
-    else:
-        run(["certbot", "--apache", "-d", config.domain], sudo=True)
+    run(
+        build_certbot_command(
+            web_server=web_server,
+            domain=config.domain,
+            email=str(ssl.get("email")) if ssl.get("email") else None,
+            redirect=_as_bool(ssl.get("redirect", True), default=True),
+            staging=_as_bool(ssl.get("staging", False)),
+            agree_tos=_as_bool(ssl.get("agree_tos", True), default=True),
+        ),
+        sudo=True,
+    )
 
     if not is_dry_run():
         console.print(f"[green]SSL enabled for {config.domain}[/green]")

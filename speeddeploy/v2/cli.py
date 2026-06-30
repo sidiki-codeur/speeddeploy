@@ -10,9 +10,10 @@ from rich.console import Console
 from rich.syntax import Syntax
 from rich.table import Table
 
-from .engine import DeploymentEngine, build_engine, build_plan
+from .engine import AuditFinding, DeployContext, DeploymentEngine, build_engine, build_plan
 from .executor import ExecutorError
 from .models import ConnectionSpec, DeploymentTarget, ProjectSpec, ProjectTemplate, V2ConfigError, load_project_spec, render_project_spec
+from .state import DeploymentState
 from ..system import RuntimeInfo, detect_runtime
 
 app = typer.Typer(add_completion=False, help="SpeedDeploy V2 primary deployment CLI.")
@@ -102,6 +103,86 @@ def _print_project_summary(spec: ProjectSpec, config_path: Path) -> None:
     console.print(table)
 
 
+def _print_findings(title: str, findings: list[AuditFinding]) -> None:
+    table = Table(title=title)
+    table.add_column("Severity")
+    table.add_column("Check")
+    table.add_column("Detail")
+    for finding in findings:
+        if finding.severity == "error":
+            severity = "[red]ERROR[/red]"
+        elif finding.severity == "warn":
+            severity = "[yellow]WARN[/yellow]"
+        else:
+            severity = "[green]OK[/green]"
+        table.add_row(severity, finding.check, finding.detail)
+    console.print(table)
+
+    ok = sum(1 for item in findings if item.severity == "ok")
+    warns = sum(1 for item in findings if item.severity == "warn")
+    errors = sum(1 for item in findings if item.severity == "error")
+    summary = Table(title=f"{title} summary", show_header=False)
+    summary.add_column("Field")
+    summary.add_column("Value")
+    summary.add_row("OK", str(ok))
+    summary.add_row("WARN", str(warns))
+    summary.add_row("ERROR", str(errors))
+    console.print(summary)
+
+
+def _print_audit(findings: list[AuditFinding]) -> None:
+    _print_findings("Audit report", findings)
+
+
+def _print_diagnose(findings: list[AuditFinding]) -> None:
+    _print_findings("Diagnosis report", findings)
+
+
+def _print_deployment_state(
+    spec: ProjectSpec,
+    ctx: DeployContext,
+    state: DeploymentState | None,
+    *,
+    current_release: str | None,
+    release_count: int,
+) -> None:
+    table = Table(title=f"Deployment state: {spec.project}")
+    table.add_column("Field")
+    table.add_column("Value")
+    if state is None:
+        table.add_row("State", "No deployment state recorded yet")
+        table.add_row("State file", str(ctx.state_dir / "state.json"))
+        table.add_row("Release dir", str(spec.releases_dir))
+        table.add_row("Shared dir", str(spec.shared_dir))
+        table.add_row("Current link", str(spec.current_link))
+        table.add_row("Current release", current_release or "none")
+        table.add_row("Known releases", str(release_count))
+        table.add_row("System packages", "install" if spec.system_packages.install else "skip")
+        table.add_row("System user", f"{'create' if spec.system_user.create else 'reuse'} ({spec.system_user.shell})")
+        table.add_row("Healthcheck", "enabled" if spec.healthcheck.enabled else "disabled")
+        console.print(table)
+        return
+    table.add_row("State file", str(ctx.state_dir / "state.json"))
+    table.add_row("Release dir", str(spec.releases_dir))
+    table.add_row("Shared dir", str(spec.shared_dir))
+    table.add_row("Current link", str(spec.current_link))
+    table.add_row("Status", state.status)
+    table.add_row("Last deploy", state.last_deploy_at)
+    table.add_row("Branch", state.branch)
+    table.add_row("Strategy", state.strategy)
+    table.add_row("Current release", state.current_release or current_release or "none")
+    current_release_name = state.current_release or current_release
+    table.add_row("Current release path", str(spec.releases_dir / current_release_name) if current_release_name else "-")
+    table.add_row("Previous release", state.previous_release or "-")
+    table.add_row("Last commit", state.last_commit or "-")
+    table.add_row("Known releases", str(release_count))
+    table.add_row("System packages", "install" if spec.system_packages.install else "skip")
+    table.add_row("System user", f"{'create' if spec.system_user.create else 'reuse'} ({spec.system_user.shell})")
+    table.add_row("Healthcheck", "enabled" if spec.healthcheck.enabled else "disabled")
+    table.add_row("SSL", spec.ssl.email or spec.target.ssl_provider)
+    console.print(table)
+
+
 def _template_from_spec(spec: ProjectSpec, *, project: str | None = None, path: Path | None = None) -> ProjectTemplate:
     return ProjectTemplate(
         project=project or spec.project,
@@ -121,8 +202,10 @@ def _template_from_spec(spec: ProjectSpec, *, project: str | None = None, path: 
         connection=spec.connection,
         releases=spec.releases,
         healthcheck=spec.healthcheck,
+        ssl=spec.ssl,
         database=spec.database,
         env=dict(spec.env),
+        extras=dict(spec.extras),
     )
 
 
@@ -431,7 +514,10 @@ def helpers() -> None:
     table.add_row("speeddeploy v2 projects remove <project>", "Delete a project configuration file.")
     table.add_row("speeddeploy v2 doctor <project>", "Inspect runtime, config, executor, and plan.")
     table.add_row("speeddeploy v2 doctor <project> --fix", "Repair Git ownership and safe.directory issues.")
+    table.add_row("speeddeploy v2 audit <project>", "Run a preflight diagnostics audit and report warnings/errors.")
+    table.add_row("speeddeploy v2 diagnose <project>", "Inspect service state, healthchecks, logs, and deployment state.")
     table.add_row("speeddeploy v2 plan <project>", "Preview the V2 deployment plan.")
+    table.add_row("speeddeploy v2 info <project>", "Show the latest persisted deployment state.")
     table.add_row("speeddeploy v2 deploy <project>", "Run a full deployment with the selected backend.")
     table.add_row("speeddeploy v2 deploy <project> --keep-local-changes", "Keep local Git changes if the repo already exists.")
     table.add_row("speeddeploy v2 deploy <project> --discard-local-changes", "Discard local Git changes if the repo already exists.")
@@ -445,6 +531,7 @@ def helpers() -> None:
     table.add_row("speeddeploy v2 update-cert <project>", "Renew or reissue SSL certificates and reload the web server.")
     table.add_row("speeddeploy v2 releases <project>", "List releases and show the active one (releases mode).")
     table.add_row("speeddeploy v2 rollback <project>", "Reactivate the previous release (releases mode).")
+    table.add_row("speeddeploy v2 rollback <project> --to <release>", "Reactivate a specific release by name.")
     table.add_row("speeddeploy v2 backup <project>", "Back up the configured database on demand.")
     console.print(table)
 
@@ -462,12 +549,69 @@ def doctor(
     engine.doctor(fix=fix)
 
 
+@app.command("audit")
+def audit(ctx: typer.Context, project: str) -> None:
+    state = _state(ctx)
+    spec = _load_spec(project, state)
+    engine = build_engine(spec, dry_run=state.dry_run)
+    findings = engine.audit()
+    _print_runtime(state)
+    _print_project_summary(spec, _project_config_path(project, state))
+    console.print()
+    _print_audit(findings)
+    if any(item.severity == "error" for item in findings):
+        raise typer.Exit(code=1)
+
+
+@app.command("diagnose")
+def diagnose(ctx: typer.Context, project: str) -> None:
+    state = _state(ctx)
+    spec = _load_spec(project, state)
+    engine = build_engine(spec, dry_run=state.dry_run)
+    deploy_ctx = engine.deployment_context()
+    release_names, current_release = engine.release_overview()
+    _print_runtime(state)
+    _print_project_summary(spec, _project_config_path(project, state))
+    console.print()
+    _print_deployment_state(
+        spec,
+        deploy_ctx,
+        engine.deployment_state(),
+        current_release=current_release,
+        release_count=len(release_names),
+    )
+    console.print()
+    findings = engine.diagnose()
+    _print_diagnose(findings)
+    if any(item.severity == "error" for item in findings):
+        raise typer.Exit(code=1)
+
+
 @app.command("plan")
 def plan(ctx: typer.Context, project: str) -> None:
     state = _state(ctx)
     spec = _load_spec(project, state)
     _print_runtime(state)
     _print_plan(spec)
+
+
+@app.command("info")
+def info(ctx: typer.Context, project: str) -> None:
+    state = _state(ctx)
+    spec = _load_spec(project, state)
+    engine = build_engine(spec, dry_run=state.dry_run)
+    deploy_ctx = engine.deployment_context()
+    release_names, current_release = engine.release_overview()
+    _print_runtime(state)
+    _print_project_summary(spec, _project_config_path(project, state))
+    console.print()
+    _print_deployment_state(
+        spec,
+        deploy_ctx,
+        engine.deployment_state(),
+        current_release=current_release,
+        release_count=len(release_names),
+    )
 
 
 @app.command("deploy")
@@ -578,12 +722,12 @@ def superuser(ctx: typer.Context, project: str) -> None:
 
 
 @app.command("rollback")
-def rollback(ctx: typer.Context, project: str) -> None:
+def rollback(ctx: typer.Context, project: str, target_release: str | None = typer.Option(None, "--to", help="Rollback to a specific release name.")) -> None:
     """Reactivate the previous release (requires releases.enabled)."""
     state = _state(ctx)
     spec = _load_spec(project, state)
     engine = build_engine(spec, dry_run=state.dry_run)
-    _run_engine(engine.rollback)
+    _run_engine(lambda: engine.rollback(target_release=target_release))
 
 
 @app.command("releases")

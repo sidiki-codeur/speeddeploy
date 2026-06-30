@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import yaml
+
+from ..paths import as_posix_text
 
 
 class V2ConfigError(ValueError):
@@ -79,6 +81,33 @@ class HealthcheckSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class SSLSpec:
+    """Certbot provisioning options."""
+
+    enabled: bool = True
+    email: str | None = None
+    redirect: bool = True
+    staging: bool = False
+    agree_tos: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class SystemPackagesSpec:
+    """System package installation policy."""
+
+    install: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class SystemUserSpec:
+    """Optional system user provisioning settings."""
+
+    create: bool = False
+    shell: str = "/usr/sbin/nologin"
+    home: PurePosixPath | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class DatabaseSpec:
     """Database backup settings used before running migrations."""
 
@@ -129,6 +158,9 @@ class ProjectSpec:
     connection: ConnectionSpec = field(default_factory=ConnectionSpec)
     releases: ReleasesSpec = field(default_factory=ReleasesSpec)
     healthcheck: HealthcheckSpec = field(default_factory=HealthcheckSpec)
+    ssl: SSLSpec = field(default_factory=SSLSpec)
+    system_packages: SystemPackagesSpec = field(default_factory=SystemPackagesSpec)
+    system_user: SystemUserSpec = field(default_factory=SystemUserSpec)
     database: DatabaseSpec = field(default_factory=DatabaseSpec)
     env: dict[str, str] = field(default_factory=dict)
     extras: dict[str, Any] = field(default_factory=dict)
@@ -183,26 +215,30 @@ class ProjectTemplate:
     connection: ConnectionSpec = field(default_factory=ConnectionSpec)
     releases: ReleasesSpec = field(default_factory=ReleasesSpec)
     healthcheck: HealthcheckSpec = field(default_factory=HealthcheckSpec)
+    ssl: SSLSpec = field(default_factory=SSLSpec)
+    system_packages: SystemPackagesSpec = field(default_factory=SystemPackagesSpec)
+    system_user: SystemUserSpec = field(default_factory=SystemUserSpec)
     database: DatabaseSpec = field(default_factory=DatabaseSpec)
     env: dict[str, str] = field(default_factory=dict)
+    extras: dict[str, Any] = field(default_factory=dict)
 
     def to_yaml_data(self) -> dict[str, Any]:
         venv = self.venv or (self.path / "venv")
         static_dir = self.static_dir or (self.path / "staticfiles")
         media_dir = self.media_dir or (self.path / "media")
-        return {
+        data = {
             "project": self.project,
             "domain": self.domain,
             "repo": self.repo,
             "branch": self.branch,
-            "path": str(self.path),
+            "path": as_posix_text(self.path),
             "user": self.user,
             "group": self.group,
             "wsgi": self.wsgi,
             "python": self.python,
-            "venv": str(venv),
-            "static_dir": str(static_dir),
-            "media_dir": str(media_dir),
+            "venv": as_posix_text(venv),
+            "static_dir": as_posix_text(static_dir),
+            "media_dir": as_posix_text(media_dir),
             "workers": self.workers,
             "target": {
                 "os": self.target.os,
@@ -217,7 +253,7 @@ class ProjectTemplate:
                 "host": self.connection.host,
                 "port": self.connection.port,
                 "user": self.connection.user,
-                "identity_file": str(self.connection.identity_file) if self.connection.identity_file else None,
+                "identity_file": as_posix_text(self.connection.identity_file) if self.connection.identity_file else None,
             },
             "releases": {
                 "enabled": self.releases.enabled,
@@ -233,6 +269,21 @@ class ProjectTemplate:
                 "retries": self.healthcheck.retries,
                 "delay": self.healthcheck.delay,
             },
+            "ssl": {
+                "enabled": self.ssl.enabled,
+                "email": self.ssl.email,
+                "redirect": self.ssl.redirect,
+                "staging": self.ssl.staging,
+                "agree_tos": self.ssl.agree_tos,
+            },
+            "system_packages": {
+                "install": self.system_packages.install,
+            },
+            "system_user": {
+                "create": self.system_user.create,
+                "shell": self.system_user.shell,
+                "home": as_posix_text(self.system_user.home) if self.system_user.home else None,
+            },
             "database": {
                 "engine": self.database.engine,
                 "name": self.database.name,
@@ -245,6 +296,10 @@ class ProjectTemplate:
             },
             "env": dict(self.env),
         }
+        for key, value in self.extras.items():
+            if key not in data:
+                data[key] = value
+        return data
 
 
 def _resolve_path(value: Any, base_dir: Path) -> Path:
@@ -307,6 +362,13 @@ def load_project_spec(project: str | Path, projects_dir: Path | None = None) -> 
         if not value:
             raise V2ConfigError(f"The `{key}` field cannot be empty.")
         return value
+
+    def resolve_posix_path(key: str) -> Path:
+        raw_value = require_text(key)
+        normalized = raw_value.replace("\\", "/")
+        if normalized.startswith("/"):
+            return PurePosixPath(normalized)
+        return PurePosixPath(as_posix_text(base_dir)) / PurePosixPath(normalized)
 
     target = DeploymentTarget(
         os=str(target_section.get("os", "linux")),
@@ -383,6 +445,36 @@ def load_project_spec(project: str | Path, projects_dir: Path | None = None) -> 
         delay=_as_int(healthcheck_section.get("delay", 3), "healthcheck.delay", default=3, minimum=0),
     )
 
+    ssl_section = _read_section(data, "ssl")
+    ssl = SSLSpec(
+        enabled=_as_bool(ssl_section.get("enabled", True), default=True),
+        email=str(ssl_section["email"]).strip() if ssl_section.get("email") else None,
+        redirect=_as_bool(ssl_section.get("redirect", True), default=True),
+        staging=_as_bool(ssl_section.get("staging", False)),
+        agree_tos=_as_bool(ssl_section.get("agree_tos", True), default=True),
+    )
+
+    system_packages_section = _read_section(data, "system_packages")
+    system_packages = SystemPackagesSpec(
+        install=_as_bool(system_packages_section.get("install", True), default=True),
+    )
+
+    system_user_section = _read_section(data, "system_user")
+    system_user_home_value = system_user_section.get("home")
+    if system_user_home_value:
+        normalized_home = str(system_user_home_value).replace("\\", "/")
+        if normalized_home.startswith("/"):
+            system_user_home = PurePosixPath(normalized_home)
+        else:
+            system_user_home = PurePosixPath(as_posix_text(base_dir)) / PurePosixPath(normalized_home)
+    else:
+        system_user_home = None
+    system_user = SystemUserSpec(
+        create=_as_bool(system_user_section.get("create", False), default=False),
+        shell=str(system_user_section.get("shell", "/usr/sbin/nologin")) or "/usr/sbin/nologin",
+        home=system_user_home,
+    )
+
     database_section = _read_section(data, "database")
     db_engine = str(database_section.get("engine", "none")).strip().lower() or "none"
     db_engine = _DB_ENGINE_ALIASES.get(db_engine, db_engine)
@@ -409,7 +501,7 @@ def load_project_spec(project: str | Path, projects_dir: Path | None = None) -> 
     else:
         raise V2ConfigError("The `env` field must be a mapping of KEY: value pairs.")
 
-    known = set(required) | {"branch", "target", "connection", "releases", "healthcheck", "database", "env", "os", "init_system", "web_server", "app_server", "ssl_provider", "package_manager", "backend", "host", "port", "identity_file"}
+    known = set(required) | {"branch", "target", "connection", "releases", "healthcheck", "ssl", "system_packages", "system_user", "database", "env", "os", "init_system", "web_server", "app_server", "ssl_provider", "package_manager", "backend", "host", "port", "identity_file"}
     extras = {key: value for key, value in data.items() if key not in known}
 
     return ProjectSpec(
@@ -417,19 +509,22 @@ def load_project_spec(project: str | Path, projects_dir: Path | None = None) -> 
         domain=require_text("domain"),
         repo=require_text("repo"),
         branch=str(data.get("branch", "main")).strip() or "main",
-        path=_resolve_path(require_text("path"), base_dir),
+        path=resolve_posix_path("path"),
         user=require_text("user"),
         group=require_text("group"),
         wsgi=require_text("wsgi"),
         python=require_text("python"),
-        venv=_resolve_path(require_text("venv"), base_dir),
-        static_dir=_resolve_path(require_text("static_dir"), base_dir),
-        media_dir=_resolve_path(require_text("media_dir"), base_dir),
+        venv=resolve_posix_path("venv"),
+        static_dir=resolve_posix_path("static_dir"),
+        media_dir=resolve_posix_path("media_dir"),
         workers=workers,
         target=target,
         connection=connection,
         releases=releases,
         healthcheck=healthcheck,
+        ssl=ssl,
+        system_packages=system_packages,
+        system_user=system_user,
         database=database,
         env=env,
         extras=extras,

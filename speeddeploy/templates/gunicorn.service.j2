@@ -6,11 +6,26 @@ After=network.target
 User={{ user }}
 Group={{ group }}
 WorkingDirectory={{ app_dir }}
+Type=simple
 Environment=PYTHONUNBUFFERED=1
 {% if env_file %}EnvironmentFile=-{{ env_file }}
 {% endif %}ExecStart={{ venv }}/bin/gunicorn --workers {{ workers }} --bind unix:{{ socket }} {{ wsgi }}
-Restart=always
+UMask=0007
+Restart=on-failure
 RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGQUIT
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
 
 [Install]
 WantedBy=multi-user.target

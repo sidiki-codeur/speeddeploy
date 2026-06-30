@@ -8,6 +8,19 @@ Le projet dispose maintenant de deux niveaux :
 
 V2 est le chemin principal et recommande pour les nouveaux projets.
 
+## Documentation detaillee
+
+Les pages suivantes detailleent les cas d usage les plus utiles:
+
+- [Installation](docs/installation.md)
+- [Django + Apache](docs/django-apache.md)
+- [Django + Nginx](docs/django-nginx.md)
+- [Deploiement SSH](docs/ssh-deploy.md)
+- [Releases et rollback](docs/releases-rollback.md)
+- [SSL avec Certbot](docs/ssl-certbot.md)
+- [Sauvegardes de base](docs/database-backups.md)
+- [Depannage](docs/troubleshooting.md)
+
 ## Ce que SpeedDeploy automatise
 
 SpeedDeploy prend en charge les etapes repetitives du deploiement Django :
@@ -551,9 +564,9 @@ connection:
 - Garde `target.web_server` a `apache` si tu veux une configuration classique Debian/Ubuntu
 - Passe a `nginx` si tu veux un reverse proxy Nginx devant Gunicorn
 
-## Deploiement atomique, healthcheck, backups et secrets
+## Deploiement atomique, healthcheck, backups, systeme et secrets
 
-La V2 propose quatre blocs de configuration optionnels qui rendent les deploiements plus surs. Ils sont desactives ou neutres par defaut : les projets existants continuent de fonctionner sans modification.
+La V2 propose plusieurs blocs de configuration optionnels qui rendent les deploiements plus surs. Ils sont desactives ou neutres par defaut : les projets existants continuent de fonctionner sans modification.
 
 ### Bloc `releases` — deploiement atomique et rollback
 
@@ -585,6 +598,30 @@ speeddeploy v2 rollback <projet>    # reactive la release precedente
 ```
 
 > En mode releases, `deploy`, `update` et `update-code` creent tous une nouvelle release ; le code provient toujours d un clone neuf de la branche, donc les options `--keep/--discard-local-changes` ne s appliquent pas.
+
+### Bloc `system_packages` - controle de l installation des paquets
+
+Si tu veux garder la main sur les paquets systeme, coupe l installation automatique:
+
+```yaml
+system_packages:
+  install: false
+```
+
+Par defaut, la valeur reste active. Quand elle vaut `false`, SpeedDeploy prepare le reste du deploiement sans toucher au gestionnaire de paquets.
+
+### Bloc `system_user` - creation optionnelle de l utilisateur
+
+Quand tu veux laisser SpeedDeploy creer l utilisateur systeme, active ce bloc:
+
+```yaml
+system_user:
+  create: true
+  shell: /usr/sbin/nologin
+  home: /srv/gestiolocative
+```
+
+Ce bloc est utile pour les serveurs vierges ou les installations standardisees. Si l utilisateur et le groupe existent deja, SpeedDeploy les reutilise.
 
 ### Bloc `healthcheck` — verification post-deploiement
 
@@ -690,6 +727,8 @@ Ces commandes agissent sur les fichiers YAML dans `projects/` et reutilisent le 
 | `speeddeploy v2 doctor <project>` | Verifier la configuration, l environnement et le plan avant d executer. |
 | `speeddeploy v2 doctor <project> --fix` | Reparer les droits du depot et `safe.directory`. |
 | `speeddeploy v2 plan <project>` | Afficher la liste exacte des etapes prevues. |
+| `speeddeploy v2 info <project>` | Afficher l etat persistant du dernier deploiement et la release active. |
+| `speeddeploy v2 diagnose <project>` | Inspecter l etat du service, les logs, le healthcheck et l etat de deploiement. |
 | `speeddeploy v2 deploy <project>` | Lancer un deploiement complet du projet. |
 | `speeddeploy v2 update <project>` | Relancer tout le cycle: code, configuration, SSL et redemarrage. |
 | `speeddeploy v2 update-code <project>` | Mettre a jour le code applicatif, les dependances Python et les migrations. |
@@ -700,6 +739,7 @@ Ces commandes agissent sur les fichiers YAML dans `projects/` et reutilisent le 
 | `speeddeploy v2 logs <project>` | Lire les journaux du service applicatif. |
 | `speeddeploy v2 ssl <project>` | Repasser le provisionnement SSL via Certbot. |
 | `speeddeploy v2 superuser <project>` | Creer un superutilisateur Django dans le virtualenv du projet. |
+| `speeddeploy v2 rollback <project> --to <release>` | Revenir a une release precise par son nom. |
 | `speeddeploy v2 helpers` | Afficher l aide operationnelle et les raccourcis utiles. |
 
 ### CLI principale
@@ -735,6 +775,8 @@ speeddeploy plan gestiolocative
 speeddeploy helpers
 speeddeploy v2 doctor gestiolocative
 speeddeploy v2 plan gestiolocative
+speeddeploy v2 info gestiolocative
+speeddeploy v2 diagnose gestiolocative
 speeddeploy v2 helpers
 ```
 
@@ -794,6 +836,9 @@ speeddeploy v2 update-code gestiolocative --keep-local-changes
 speeddeploy v2 update-code gestiolocative --discard-local-changes
 speeddeploy v2 update-conf gestiolocative
 speeddeploy v2 update-cert gestiolocative
+speeddeploy v2 rollback gestiolocative
+speeddeploy v2 rollback gestiolocative --to 20260628-150000
+speeddeploy v2 diagnose gestiolocative
 speeddeploy v2 restart gestiolocative
 speeddeploy v2 status gestiolocative
 speeddeploy v2 logs gestiolocative
