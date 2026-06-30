@@ -538,11 +538,8 @@ def _parse_python_version(output: str) -> tuple[int, int, int] | None:
     return tuple(int(part) for part in match.groups())
 
 
-def _parse_django_requirement(requirements_path: Path) -> tuple[str, tuple[int, ...]] | None:
-    if not requirements_path.exists():
-        return None
-
-    for raw_line in requirements_path.read_text(encoding="utf-8").splitlines():
+def _parse_django_requirement_text(content: str) -> tuple[str, tuple[int, ...]] | None:
+    for raw_line in content.splitlines():
         line = raw_line.split("#", 1)[0].strip()
         if not line or line.startswith(("-", "--", "git+", "http://", "https://")):
             continue
@@ -553,6 +550,16 @@ def _parse_django_requirement(requirements_path: Path) -> tuple[str, tuple[int, 
         version = tuple(int(part) for part in match.group(2).split("."))
         return operator, version
     return None
+
+
+def _parse_django_requirement(executor: Executor, requirements_path: Path, ctx: DeployContext) -> tuple[str, tuple[int, ...]] | None:
+    if not executor.path_exists(requirements_path):
+        return None
+    try:
+        content = executor.capture(["cat", str(requirements_path)], cwd=ctx.work_dir, as_user=ctx.spec.user)
+    except ExecutorError:
+        return None
+    return _parse_django_requirement_text(content)
 
 
 def _git_revision(executor: Executor, path: Path, *, as_user: str | None) -> str | None:
@@ -592,7 +599,7 @@ def _ensure_python_django_compatibility(executor: Executor, ctx: DeployContext) 
         return
 
     requirements_path = ctx.work_dir / "requirements.txt"
-    django_requirement = _parse_django_requirement(requirements_path)
+    django_requirement = _parse_django_requirement(executor, requirements_path, ctx)
     if django_requirement is None:
         return
 
