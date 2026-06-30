@@ -294,6 +294,19 @@ def _system_packages(spec: ProjectSpec) -> list[str]:
     return packages
 
 
+def _apt_missing_packages(executor: Executor, packages: list[str]) -> list[str]:
+    missing: list[str] = []
+    for package in packages:
+        try:
+            status = executor.capture(["dpkg-query", "-W", "-f=${Status}", package])
+        except ExecutorError:
+            missing.append(package)
+            continue
+        if "install ok installed" not in status:
+            missing.append(package)
+    return missing
+
+
 def _install_packages(executor: Executor, spec: ProjectSpec) -> None:
     if not spec.system_packages.install:
         console.print("[green]System package installation skipped by configuration.[/green]")
@@ -301,7 +314,23 @@ def _install_packages(executor: Executor, spec: ProjectSpec) -> None:
     packages = _system_packages(spec)
     manager = spec.target.package_manager.lower()
     if manager == "apt":
-        executor.run(["apt-get", "update"], sudo=True)
+        try:
+            executor.run(["apt-get", "update"], sudo=True)
+        except ExecutorError as exc:
+            missing = _apt_missing_packages(executor, packages)
+            if not missing:
+                console.print(
+                    "[yellow]apt-get update failed, but all required packages are already installed. "
+                    "Continuing deployment. Fix the broken APT repository later or set "
+                    "`system_packages.install: false` in the project YAML.[/yellow]"
+                )
+                return
+            raise ExecutorError(
+                "apt-get update failed and some required packages are missing: "
+                f"{', '.join(missing)}. Fix the broken APT repository first, then rerun the deployment. "
+                "If the server is already prepared manually, set `system_packages.install: false` "
+                "in the project YAML."
+            ) from exc
         executor.run(["apt-get", "install", "-y", *packages], sudo=True)
         return
     if manager == "dnf":

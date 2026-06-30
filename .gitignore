@@ -10,3 +10,25 @@ build/
 # Project configuration files must never be pushed to GitHub
 projects/*
 !projects/.gitkeep
+
+# Additional Python and editor files
+.env.*
+.pytest_cache/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+htmlcov/
+*.sqlite
+*.sqlite3
+*.db
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+.DS_Store
+Thumbs.db
+desktop.ini

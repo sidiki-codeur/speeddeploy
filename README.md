@@ -610,6 +610,23 @@ system_packages:
 
 Par defaut, la valeur reste active. Quand elle vaut `false`, SpeedDeploy prepare le reste du deploiement sans toucher au gestionnaire de paquets.
 
+Avec `apt`, SpeedDeploy lance `apt-get update` puis installe les paquets requis. Si `apt-get update` echoue a cause d un depot externe casse, mais que tous les paquets requis sont deja installes, SpeedDeploy continue le deploiement avec un avertissement.
+
+Si un paquet requis manque, corrige d abord le depot APT fautif ou prepare le serveur manuellement, puis relance:
+
+```yaml
+system_packages:
+  install: false
+```
+
+Exemple d erreur serveur concernee:
+
+```text
+E: The repository 'https://packages.adoptium.net/artifactory/deb forky Release' does not have a Release file.
+```
+
+Dans ce cas, le probleme vient de la configuration APT du serveur, pas du projet Django.
+
 ### Bloc `system_user` - creation optionnelle de l utilisateur
 
 Quand tu veux laisser SpeedDeploy creer l utilisateur systeme, active ce bloc:
